@@ -173,7 +173,39 @@ for i, trace in enumerate(traces[:5]):
     print(f"Trace {i+1}: {' → '.join(trace)}")
 ```
 
-#### 3. Evaluate Quality
+#### 3. Visualize Generated Graphs
+
+**Option A: Interactive Matplotlib Viewer** (Desktop)
+```bash
+# Navigate graphs with buttons or keyboard
+python interactive_viewer.py --data data/sample_event_log.csv --n-samples 10
+
+# Keyboard shortcuts:
+#   Right/N: Next graph
+#   Left/P: Previous graph
+#   R: Regenerate all samples
+#   Q: Quit
+```
+
+**Option B: Web-based Viewer** (Browser)
+```bash
+# Opens interactive dashboard in browser
+python web_viewer.py --data data/sample_event_log.csv --n-samples 6
+
+# Features:
+#   - Zoom, pan, hover for details
+#   - Multiple graphs in dashboard
+#   - Shareable HTML file
+```
+
+**Option C: Static Images**
+```bash
+# Generate PNG images
+python test_visualization.py
+# Output: visualizations/*.png
+```
+
+#### 4. Evaluate Quality
 
 ```python
 from utils.process_metrics import ProcessRewardFunction

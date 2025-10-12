@@ -290,6 +290,34 @@ class ProcessDataset:
 
         return trace
 
+    def decode_batch(self, adjacency_batch, nodes_batch, strict=True):
+        """
+        Convert batch of adjacency matrices and node features to traces
+
+        Args:
+            adjacency_batch: Array of shape (batch_size, max_activities, max_activities, flow_types)
+            nodes_batch: Array of shape (batch_size, max_activities, activity_types)
+            strict: If True, stop at first PAD token
+
+        Returns:
+            List of traces (list of activity names)
+        """
+        import numpy as np
+        traces = []
+
+        for i in range(len(nodes_batch)):
+            # Get node indices from one-hot encoding
+            if len(nodes_batch[i].shape) == 2:
+                node_indices = np.argmax(nodes_batch[i], axis=-1)
+            else:
+                node_indices = nodes_batch[i]
+
+            # Convert to trace
+            trace = self.matrices_to_trace(node_indices, strict=strict)
+            traces.append(trace)
+
+        return traces
+
     def _generate_train_validation_test(self, validation, test):
         """
         Split dataset into train/validation/test

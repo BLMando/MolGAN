@@ -104,3 +104,7 @@ venv.bak/
 .mypy_cache/
 
 checkpoints/
+
+# Dataset files
+data/gdb9.sdf
+data/*.pkl.gz

@@ -5,12 +5,19 @@ Modern training implementation using eager execution.
 Compatible with TensorFlow 2.15+ and Python 3.10+.
 
 Usage:
-    python example_process_tf2.py
+    # Train on event log (CSV)
+    python example_process_tf2.py --data data/sample_event_log.csv --input-format csv
+
+    # Train on graph formats
+    python example_process_tf2.py --data data/sample_process.graphml --input-format graphml
+    python example_process_tf2.py --data data/sample_process.pnml --input-format petri
+    python example_process_tf2.py --data data/sample_process.bpmn --input-format bpmn
 """
 
 import numpy as np
 import tensorflow as tf
 import os
+import argparse
 from datetime import datetime
 from pathlib import Path
 
@@ -74,6 +81,44 @@ config = {
     # Logging
     'log_every': 1,  # Log every N epochs
 }
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# COMMAND-LINE ARGUMENTS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def parse_args():
+    """Parse command-line arguments"""
+    parser = argparse.ArgumentParser(description='ProcessGAN Training (TensorFlow 2.x)')
+
+    # Data arguments
+    parser.add_argument('--data', type=str, default='data/sample_event_log.csv',
+                       help='Path to input data file')
+    parser.add_argument('--input-format', type=str, default='csv',
+                       choices=['csv', 'xes', 'petri', 'bpmn', 'graphml'],
+                       help='Input data format')
+
+    # Model arguments
+    parser.add_argument('--max-activities', type=int, default=15,
+                       help='Maximum number of activities')
+    parser.add_argument('--z-dim', type=int, default=16,
+                       help='Latent dimension')
+
+    # Training arguments
+    parser.add_argument('--epochs', type=int, default=50,
+                       help='Number of training epochs')
+    parser.add_argument('--batch-size', type=int, default=32,
+                       help='Batch size')
+    parser.add_argument('--learning-rate', type=float, default=1e-4,
+                       help='Learning rate')
+
+    # Output arguments
+    parser.add_argument('--save-dir', type=str, default='results/checkpoints',
+                       help='Directory to save checkpoints')
+    parser.add_argument('--log-dir', type=str, default='results/logs',
+                       help='Directory for logs')
+
+    return parser.parse_args()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -210,16 +255,52 @@ def main():
     # 1. LOAD DATASET
     # ─────────────────────────────────────────────────────────
 
+    # Parse command-line arguments
+    args = parse_args()
+
+    # Override config with command-line arguments
+    config['data_file'] = args.data
+    config['max_activities'] = args.max_activities
+    config['z_dim'] = args.z_dim
+    config['epochs'] = args.epochs
+    config['batch_size'] = args.batch_size
+    config['learning_rate'] = args.learning_rate
+    config['save_dir'] = args.save_dir
+    config['log_dir'] = args.log_dir
+
+    log(f"Input format: {args.input_format}")
     log("Loading dataset...")
     data = ProcessDataset(max_activities=config['max_activities'])
 
-    # Check if data file exists
+    # Load based on format
     if os.path.exists(config['data_file']):
-        data.load_from_csv(
-            config['data_file'],
-            validation=config['validation_split'],
-            test=config['test_split']
-        )
+        if args.input_format == 'csv':
+            data.load_from_csv(
+                config['data_file'],
+                validation=config['validation_split'],
+                test=config['test_split']
+            )
+        elif args.input_format == 'petri':
+            data.load_from_petri_net(
+                config['data_file'],
+                validation=config['validation_split'],
+                test=config['test_split']
+            )
+        elif args.input_format == 'bpmn':
+            data.load_from_bpmn(
+                config['data_file'],
+                validation=config['validation_split'],
+                test=config['test_split']
+            )
+        elif args.input_format == 'graphml':
+            data.load_from_graphml(
+                config['data_file'],
+                validation=config['validation_split'],
+                test=config['test_split']
+            )
+        else:
+            log(f"Unsupported format: {args.input_format}", level='ERROR')
+            return
     else:
         log(f"Data file not found: {config['data_file']}", level='WARNING')
         log("Creating synthetic dataset for demo...", level='WARNING')

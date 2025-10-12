@@ -416,6 +416,147 @@ class ProcessDataset:
         self.test_counter = out[0]
         return out[1:]
 
+    def load_from_petri_net(self, pnml_path, validation=0.1, test=0.1):
+        """
+        Load dataset from Petri net (PNML format)
+
+        Args:
+            pnml_path: Path to PNML file
+            validation: Fraction for validation set
+            test: Fraction for test set
+        """
+        from utils.graph_loader import GraphLoader
+
+        self.log(f'Loading Petri net from {pnml_path}...')
+
+        loader = GraphLoader(max_activities=self.max_activities)
+        adj, nodes, activity_encoder, flow_encoder = loader.load_petri_net(pnml_path)
+
+        # Update encoders
+        self.activity_encoder = activity_encoder
+        self.activity_decoder = {v: k for k, v in activity_encoder.items()}
+        self.flow_encoder = flow_encoder
+        self.flow_decoder = {v: k for k, v in flow_encoder.items()}
+
+        # Create dataset with single graph
+        self.generate_from_graphs([adj], [nodes], validation=validation, test=test)
+
+    def load_from_bpmn(self, bpmn_path, validation=0.1, test=0.1):
+        """
+        Load dataset from BPMN model (XML format)
+
+        Args:
+            bpmn_path: Path to BPMN XML file
+            validation: Fraction for validation set
+            test: Fraction for test set
+        """
+        from utils.graph_loader import GraphLoader
+
+        self.log(f'Loading BPMN from {bpmn_path}...')
+
+        loader = GraphLoader(max_activities=self.max_activities)
+        adj, nodes, activity_encoder, flow_encoder = loader.load_bpmn(bpmn_path)
+
+        # Update encoders
+        self.activity_encoder = activity_encoder
+        self.activity_decoder = {v: k for k, v in activity_encoder.items()}
+        self.flow_encoder = flow_encoder
+        self.flow_decoder = {v: k for k, v in flow_encoder.items()}
+
+        # Create dataset with single graph
+        self.generate_from_graphs([adj], [nodes], validation=validation, test=test)
+
+    def load_from_graphml(self, graphml_path, validation=0.1, test=0.1):
+        """
+        Load dataset from GraphML file
+
+        Args:
+            graphml_path: Path to GraphML file
+            validation: Fraction for validation set
+            test: Fraction for test set
+        """
+        from utils.graph_loader import GraphLoader
+
+        self.log(f'Loading GraphML from {graphml_path}...')
+
+        loader = GraphLoader(max_activities=self.max_activities)
+        adj, nodes, activity_encoder, flow_encoder = loader.load_graphml(graphml_path)
+
+        # Update encoders
+        self.activity_encoder = activity_encoder
+        self.activity_decoder = {v: k for k, v in activity_encoder.items()}
+        self.flow_encoder = flow_encoder
+        self.flow_decoder = {v: k for k, v in flow_encoder.items()}
+
+        # Create dataset with single graph
+        self.generate_from_graphs([adj], [nodes], validation=validation, test=test)
+
+    def load_from_networkx(self, G, validation=0.1, test=0.1):
+        """
+        Load dataset from NetworkX DiGraph
+
+        Args:
+            G: NetworkX DiGraph object
+            validation: Fraction for validation set
+            test: Fraction for test set
+        """
+        from utils.graph_loader import GraphLoader
+
+        self.log('Loading NetworkX graph...')
+
+        loader = GraphLoader(max_activities=self.max_activities)
+        adj, nodes, activity_encoder, flow_encoder = loader.load_networkx(G)
+
+        # Update encoders
+        self.activity_encoder = activity_encoder
+        self.activity_decoder = {v: k for k, v in activity_encoder.items()}
+        self.flow_encoder = flow_encoder
+        self.flow_decoder = {v: k for k, v in flow_encoder.items()}
+
+        # Create dataset with single graph
+        self.generate_from_graphs([adj], [nodes], validation=validation, test=test)
+
+    def generate_from_graphs(self, adjacency_list, nodes_list, validation=0.1, test=0.1):
+        """
+        Generate dataset from list of graphs (adjacency matrices + node vectors)
+
+        Args:
+            adjacency_list: List of (max_activities, max_activities) adjacency matrices
+            nodes_list: List of (max_activities,) node vectors
+            validation: Fraction for validation set
+            test: Fraction for test set
+        """
+        self.log(f'Generating dataset from {len(adjacency_list)} graphs...')
+
+        # Store graphs directly
+        self.adjacency_matrices = adjacency_list
+        self.node_features = nodes_list
+
+        # Convert to traces for compatibility (extract sequence from adjacency)
+        self.traces = []
+        for i in range(len(nodes_list)):
+            trace = self.matrices_to_trace(nodes_list[i], strict=True)
+            self.traces.append(trace)
+
+        # Store as numpy arrays
+        self.data_A = np.array(adjacency_list, dtype=np.int32)
+        self.data_X = np.array(nodes_list, dtype=np.int32)
+
+        # Generate features (one-hot encoding)
+        self.data_F = np.zeros((len(nodes_list), self.max_activities, len(self.activity_encoder)), dtype=np.float32)
+        for i, nodes in enumerate(nodes_list):
+            for j, node_idx in enumerate(nodes):
+                if node_idx > 0:  # Skip PAD
+                    self.data_F[i, j, node_idx] = 1.0
+
+        self.data = self.traces
+        self.__len = len(self.traces)
+
+        # Split into train/val/test
+        self._generate_train_validation_test(validation, test)
+
+        self.log(f'Dataset generated: {self.train_count} train, {self.validation_count} val, {self.test_count} test')
+
     def save(self, filename):
         """Save dataset to file"""
         with open(filename, 'wb') as f:

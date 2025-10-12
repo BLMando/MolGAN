@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns
+         http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+
+  <!-- Key definitions -->
+  <key id="label" for="node" attr.name="label" attr.type="string"/>
+  <key id="activity" for="node" attr.name="activity" attr.type="string"/>
+  <key id="type" for="edge" attr.name="type" attr.type="string"/>
+  <key id="flow_type" for="edge" attr.name="flow_type" attr.type="string"/>
+
+  <!-- Graph definition -->
+  <graph id="PurchaseOrderProcess" edgedefault="directed">
+
+    <!-- Nodes (Activities) -->
+    <node id="n0">
+      <data key="label">Start</data>
+      <data key="activity">Start</data>
+    </node>
+
+    <node id="n1">
+      <data key="label">Submit</data>
+      <data key="activity">Submit</data>
+    </node>
+
+    <node id="n2">
+      <data key="label">Review</data>
+      <data key="activity">Review</data>
+    </node>
+
+    <node id="n3">
+      <data key="label">Approve</data>
+      <data key="activity">Approve</data>
+    </node>
+
+    <node id="n4">
+      <data key="label">Reject</data>
+      <data key="activity">Reject</data>
+    </node>
+
+    <node id="n5">
+      <data key="label">Rework</data>
+      <data key="activity">Rework</data>
+    </node>
+
+    <node id="n6">
+      <data key="label">Send</data>
+      <data key="activity">Send</data>
+    </node>
+
+    <node id="n7">
+      <data key="label">End</data>
+      <data key="activity">End</data>
+    </node>
+
+    <!-- Edges (Flows) -->
+    <edge source="n0" target="n1">
+      <data key="type">SEQUENCE</data>
+      <data key="flow_type">SEQUENCE</data>
+    </edge>
+
+    <edge source="n1" target="n2">
+      <data key="type">SEQUENCE</data>
+      <data key="flow_type">SEQUENCE</data>
+    </edge>
+
+    <edge source="n2" target="n3">
+      <data key="type">CHOICE</data>
+      <data key="flow_type">CHOICE</data>
+    </edge>
+
+    <edge source="n2" target="n4">
+      <data key="type">CHOICE</data>
+      <data key="flow_type">CHOICE</data>
+    </edge>
+
+    <edge source="n3" target="n6">
+      <data key="type">SEQUENCE</data>
+      <data key="flow_type">SEQUENCE</data>
+    </edge>
+
+    <edge source="n4" target="n5">
+      <data key="type">SEQUENCE</data>
+      <data key="flow_type">SEQUENCE</data>
+    </edge>
+
+    <edge source="n5" target="n1">
+      <data key="type">LOOP</data>
+      <data key="flow_type">LOOP</data>
+    </edge>
+
+    <edge source="n6" target="n7">
+      <data key="type">SEQUENCE</data>
+      <data key="flow_type">SEQUENCE</data>
+    </edge>
+
+  </graph>
+</graphml>

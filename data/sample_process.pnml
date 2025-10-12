@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pnml>
+  <net id="PurchaseOrderProcess" type="http://www.pnml.org/version-2009/grammar/pnmlcoremodel">
+    <name>
+      <text>Purchase Order Process</text>
+    </name>
+
+    <!-- Places -->
+    <place id="p_start">
+      <name><text>start</text></name>
+      <initialMarking><text>1</text></initialMarking>
+    </place>
+
+    <place id="p1">
+      <name><text>p1</text></name>
+    </place>
+
+    <place id="p2">
+      <name><text>p2</text></name>
+    </place>
+
+    <place id="p3">
+      <name><text>p3</text></name>
+    </place>
+
+    <place id="p4">
+      <name><text>p4</text></name>
+    </place>
+
+    <place id="p5">
+      <name><text>p5</text></name>
+    </place>
+
+    <place id="p6">
+      <name><text>p6</text></name>
+    </place>
+
+    <place id="p_end">
+      <name><text>end</text></name>
+    </place>
+
+    <!-- Transitions (Activities) -->
+    <transition id="t_start">
+      <name><text>Start</text></name>
+    </transition>
+
+    <transition id="t_submit">
+      <name><text>Submit</text></name>
+    </transition>
+
+    <transition id="t_review">
+      <name><text>Review</text></name>
+    </transition>
+
+    <transition id="t_approve">
+      <name><text>Approve</text></name>
+    </transition>
+
+    <transition id="t_reject">
+      <name><text>Reject</text></name>
+    </transition>
+
+    <transition id="t_rework">
+      <name><text>Rework</text></name>
+    </transition>
+
+    <transition id="t_send">
+      <name><text>Send</text></name>
+    </transition>
+
+    <transition id="t_end">
+      <name><text>End</text></name>
+    </transition>
+
+    <!-- Arcs -->
+    <!-- Start -->
+    <arc id="a1" source="p_start" target="t_start"/>
+    <arc id="a2" source="t_start" target="p1"/>
+
+    <!-- Submit -->
+    <arc id="a3" source="p1" target="t_submit"/>
+    <arc id="a4" source="t_submit" target="p2"/>
+
+    <!-- Review -->
+    <arc id="a5" source="p2" target="t_review"/>
+    <arc id="a6" source="t_review" target="p3"/>
+
+    <!-- Approve branch -->
+    <arc id="a7" source="p3" target="t_approve"/>
+    <arc id="a8" source="t_approve" target="p5"/>
+
+    <!-- Reject branch -->
+    <arc id="a9" source="p3" target="t_reject"/>
+    <arc id="a10" source="t_reject" target="p4"/>
+
+    <!-- Rework (loop back) -->
+    <arc id="a11" source="p4" target="t_rework"/>
+    <arc id="a12" source="t_rework" target="p1"/>
+
+    <!-- Send -->
+    <arc id="a13" source="p5" target="t_send"/>
+    <arc id="a14" source="t_send" target="p6"/>
+
+    <!-- End -->
+    <arc id="a15" source="p6" target="t_end"/>
+    <arc id="a16" source="t_end" target="p_end"/>
+
+    <!-- Final marking -->
+    <finalmarkings>
+      <marking>
+        <place idref="p_end">
+          <text>1</text>
+        </place>
+      </marking>
+    </finalmarkings>
+
+  </net>
+</pnml>

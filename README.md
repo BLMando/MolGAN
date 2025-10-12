@@ -46,6 +46,7 @@ Adaptation of MolGAN for generating synthetic event logs in process mining. Supp
 
 #### Option A: TensorFlow 2.x (Recommended)
 
+**Train on Event Log (CSV):**
 ```bash
 # Setup modern environment
 conda env create -f environment_processggan.yml
@@ -57,9 +58,30 @@ conda activate ProcessGAN
 # Run training
 python example_process_tf2.py \
   --data data/sample_event_log.csv \
+  --input-format csv \
   --epochs 100 \
-  --batch-size 32 \
-  --output results/
+  --batch-size 32
+```
+
+**Train on Process Graph (GraphML/Petri Net/BPMN):** ✨ NEW!
+```bash
+# Load graph formats directly
+python example_process_tf2.py \
+  --data data/sample_process.graphml \
+  --input-format graphml \
+  --epochs 100
+
+# Or use Petri nets
+python example_process_tf2.py \
+  --data data/sample_process.pnml \
+  --input-format petri \
+  --epochs 100
+
+# Or use BPMN models
+python example_process_tf2.py \
+  --data discovered_model.bpmn \
+  --input-format bpmn \
+  --epochs 100
 ```
 
 #### Option B: TensorFlow 1.x (Legacy)
@@ -69,7 +91,7 @@ python example_process_tf2.py \
 conda env create -f environment_legacy.yml
 conda activate MolGAN_legacy
 
-# Run training
+# Run training (CSV only for legacy version)
 python example_process.py \
   --data data/sample_event_log.csv \
   --epochs 100 \
@@ -205,7 +227,41 @@ python test_visualization.py
 # Output: visualizations/*.png
 ```
 
-#### 4. Evaluate Quality
+#### 4. Load from Graph Formats (NEW!)
+
+**Load Petri Nets:**
+```python
+from utils.process_dataset import ProcessDataset
+
+dataset = ProcessDataset()
+dataset.load_from_petri_net('models/discovered_model.pnml')
+```
+
+**Load BPMN Models:**
+```python
+dataset.load_from_bpmn('models/process.bpmn')
+```
+
+**Load GraphML:**
+```python
+dataset.load_from_graphml('models/process_graph.graphml')
+```
+
+**Load NetworkX Directly:**
+```python
+import networkx as nx
+
+G = nx.DiGraph()
+G.add_node('n1', label='Start')
+G.add_node('n2', label='Submit')
+G.add_edge('n1', 'n2', type='SEQUENCE')
+
+dataset.load_from_networkx(G)
+```
+
+See [GRAPH_INPUT_GUIDE.md](GRAPH_INPUT_GUIDE.md) for complete documentation.
+
+#### 5. Evaluate Quality
 
 ```python
 from utils.process_metrics import ProcessRewardFunction
@@ -266,6 +322,8 @@ config = {
 | Document | Description |
 |----------|-------------|
 | [ARCHITETTURA_PROCESSGGAN.md](Docs/ARCHITETTURA_PROCESSGGAN.md) | Complete technical architecture (450+ lines) |
+| [GRAPH_INPUT_GUIDE.md](GRAPH_INPUT_GUIDE.md) | ✨ Graph format loading guide (Petri nets, BPMN, GraphML) |
+| [VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md) | Interactive graph visualization guide |
 | [README_PROCESSGGAN.md](README_PROCESSGGAN.md) | ProcessGAN user guide |
 | [README_TF2_MIGRATION.md](README_TF2_MIGRATION.md) | Migration guide TF 1.x → 2.x |
 | [GUIDA_ADATTAMENTO_PROCESS_MINING.md](Docs/GUIDA_ADATTAMENTO_PROCESS_MINING.md) | Original adaptation plan (Italian) |

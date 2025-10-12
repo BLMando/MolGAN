@@ -289,6 +289,12 @@ def main():
     )
     log("Trainer created")
 
+    # Build models by calling them with sample input to create weights
+    sample_z = tf.random.normal((1, config['z_dim']))
+    sample_adj, sample_nodes = model.generator(sample_z, training=False)
+    _ = model.discriminator(sample_adj, sample_nodes, training=False)
+    _ = model.value_network(sample_adj, sample_nodes, training=False)
+
     # Count parameters
     total_g = sum([np.prod(v.shape) for v in model.generator.trainable_variables])
     total_d = sum([np.prod(v.shape) for v in model.discriminator.trainable_variables])

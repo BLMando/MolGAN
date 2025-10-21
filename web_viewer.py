@@ -22,7 +22,7 @@ except ImportError:
     print("[WARNING] Plotly not installed. Install with: pip install plotly")
 
 from utils.process_dataset import ProcessDataset
-from models.process_gan_tf2 import ProcessGAN
+from models.process_gan import ProcessGAN
 
 
 class ProcessGraphWebViewer:
@@ -34,7 +34,8 @@ class ProcessGraphWebViewer:
         self.z_dim = z_dim
 
         # Decoders
-        self.activity_decoder = {v: k for k, v in dataset.activity_encoder.items()}
+        self.activity_decoder = {v: k for k,
+                                 v in dataset.activity_encoder.items()}
         self.flow_decoder = {v: k for k, v in dataset.flow_encoder.items()}
 
         # Colors
@@ -264,20 +265,21 @@ class ProcessGraphWebViewer:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Web-based ProcessGAN Graph Viewer')
+    parser = argparse.ArgumentParser(
+        description='Web-based ProcessGAN Graph Viewer')
     parser.add_argument('--data', type=str, required=True,
-                       help='Path to event log CSV')
+                        help='Path to event log CSV')
     parser.add_argument('--model', type=str, default=None,
-                       help='Path to trained model checkpoint')
+                        help='Path to trained model checkpoint')
     parser.add_argument('--n-samples', type=int, default=6,
-                       help='Number of samples to display')
+                        help='Number of samples to display')
     parser.add_argument('--z-dim', type=int, default=128,
-                       help='Latent dimension')
+                        help='Latent dimension')
     parser.add_argument('--output', type=str, default='viewer.html',
-                       help='Output HTML file')
+                        help='Output HTML file')
     parser.add_argument('--mode', type=str, default='dashboard',
-                       choices=['single', 'dashboard'],
-                       help='Viewer mode')
+                        choices=['single', 'dashboard'],
+                        help='Viewer mode')
     return parser.parse_args()
 
 
@@ -291,7 +293,8 @@ def main():
 
     print("[INFO] Loading dataset...")
     dataset = ProcessDataset()
-    dataset.load_from_csv(args.data, case_id_col='case_id', activity_col='activity')
+    dataset.load_from_csv(args.data, case_id_col='case_id',
+                          activity_col='activity')
 
     print(f"[INFO] Dataset: {len(dataset.traces)} traces")
 

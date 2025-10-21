@@ -12,7 +12,7 @@ from matplotlib.widgets import Button
 from pathlib import Path
 
 from utils.process_dataset import ProcessDataset
-from models.process_gan_tf2 import ProcessGAN
+from models.process_gan import ProcessGAN
 from utils.visualization import ProcessGraphVisualizer
 
 
@@ -29,17 +29,20 @@ class InteractiveGraphViewer:
         # Generate samples
         print(f"[INFO] Generating {n_samples} samples...")
         self.z_samples = np.random.normal(0, 1, (n_samples, z_dim))
-        self.adjacency_batch, self.nodes_batch = model.generator(self.z_samples, training=False)
+        self.adjacency_batch, self.nodes_batch = model.generator(
+            self.z_samples, training=False)
         self.adjacency_batch = self.adjacency_batch.numpy()
         self.nodes_batch = self.nodes_batch.numpy()
-        self.traces = dataset.decode_batch(self.adjacency_batch, self.nodes_batch)
+        self.traces = dataset.decode_batch(
+            self.adjacency_batch, self.nodes_batch)
 
         # Current index
         self.current_idx = 0
 
         # Create figure
         self.fig = plt.figure(figsize=(14, 10))
-        self.fig.suptitle('Interactive ProcessGAN Graph Viewer', fontsize=16, fontweight='bold')
+        self.fig.suptitle('Interactive ProcessGAN Graph Viewer',
+                          fontsize=16, fontweight='bold')
 
         # Main graph axis
         self.ax_graph = plt.subplot2grid((3, 2), (0, 0), colspan=2, rowspan=2)
@@ -126,11 +129,13 @@ class InteractiveGraphViewer:
 
                     # Color
                     if 'Start' in activity_name:
-                        node_colors.append(self.visualizer.node_colors['Start'])
+                        node_colors.append(
+                            self.visualizer.node_colors['Start'])
                     elif 'End' in activity_name:
                         node_colors.append(self.visualizer.node_colors['End'])
                     else:
-                        node_colors.append(self.visualizer.node_colors['default'])
+                        node_colors.append(
+                            self.visualizer.node_colors['default'])
 
         # Add edges
         edge_colors = []
@@ -144,7 +149,8 @@ class InteractiveGraphViewer:
                     flow_type = self.visualizer.flow_decoder[flow_idx]
                     G.add_edge(i, j)
                     edge_labels[(i, j)] = flow_type
-                    edge_colors.append(self.visualizer.flow_colors.get(flow_type, '#888888'))
+                    edge_colors.append(
+                        self.visualizer.flow_colors.get(flow_type, '#888888'))
 
                     if flow_type == 'LOOP':
                         edge_styles.append('dashed')
@@ -162,21 +168,21 @@ class InteractiveGraphViewer:
 
             # Draw
             nx.draw_networkx_nodes(G, pos, node_color=node_colors,
-                                  node_size=2000, alpha=0.9, ax=ax)
+                                   node_size=2000, alpha=0.9, ax=ax)
 
             for (u, v), style in zip(G.edges(), edge_styles):
                 edge_color = edge_colors[list(G.edges()).index((u, v))]
                 nx.draw_networkx_edges(G, pos, [(u, v)],
-                                      edge_color=[edge_color],
-                                      style=style, width=2.5, alpha=0.7,
-                                      arrowsize=20, arrowstyle='->',
-                                      connectionstyle='arc3,rad=0.1', ax=ax)
+                                       edge_color=[edge_color],
+                                       style=style, width=2.5, alpha=0.7,
+                                       arrowsize=20, arrowstyle='->',
+                                       connectionstyle='arc3,rad=0.1', ax=ax)
 
             nx.draw_networkx_labels(G, pos, activity_labels,
-                                   font_size=9, font_weight='bold', ax=ax)
+                                    font_size=9, font_weight='bold', ax=ax)
 
             nx.draw_networkx_edge_labels(G, pos, edge_labels,
-                                        font_size=7, ax=ax)
+                                         font_size=7, ax=ax)
 
             # Legend
             import matplotlib.patches as mpatches
@@ -208,22 +214,22 @@ class InteractiveGraphViewer:
             # Box
             import matplotlib.patches as mpatches
             rect = mpatches.FancyBboxPatch((i*1.5, 0), 1.2, 0.6,
-                                          boxstyle="round,pad=0.05",
-                                          facecolor=color,
-                                          edgecolor='black',
-                                          linewidth=2)
+                                           boxstyle="round,pad=0.05",
+                                           facecolor=color,
+                                           edgecolor='black',
+                                           linewidth=2)
             ax.add_patch(rect)
 
             # Text
             ax.text(i*1.5 + 0.6, 0.3, activity,
-                   ha='center', va='center',
-                   fontsize=8, fontweight='bold')
+                    ha='center', va='center',
+                    fontsize=8, fontweight='bold')
 
             # Arrow
             if i < len(trace) - 1:
                 ax.arrow(i*1.5 + 1.2, 0.3, 0.2, 0,
-                        head_width=0.15, head_length=0.1,
-                        fc='black', ec='black')
+                         head_width=0.15, head_length=0.1,
+                         fc='black', ec='black')
 
         ax.set_xlim(-0.3, len(trace)*1.5)
         ax.set_ylim(-0.2, 0.8)
@@ -244,10 +250,12 @@ class InteractiveGraphViewer:
         """Regenerate all samples"""
         print("[INFO] Regenerating samples...")
         self.z_samples = np.random.normal(0, 1, (self.n_samples, self.z_dim))
-        self.adjacency_batch, self.nodes_batch = self.model.generator(self.z_samples, training=False)
+        self.adjacency_batch, self.nodes_batch = self.model.generator(
+            self.z_samples, training=False)
         self.adjacency_batch = self.adjacency_batch.numpy()
         self.nodes_batch = self.nodes_batch.numpy()
-        self.traces = self.dataset.decode_batch(self.adjacency_batch, self.nodes_batch)
+        self.traces = self.dataset.decode_batch(
+            self.adjacency_batch, self.nodes_batch)
         self.current_idx = 0
         self.update_display()
         print("[INFO] Done!")
@@ -274,17 +282,18 @@ class InteractiveGraphViewer:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Interactive ProcessGAN Graph Viewer')
+    parser = argparse.ArgumentParser(
+        description='Interactive ProcessGAN Graph Viewer')
     parser.add_argument('--data', type=str, required=True,
-                       help='Path to event log CSV')
+                        help='Path to event log CSV')
     parser.add_argument('--model', type=str, default=None,
-                       help='Path to trained model checkpoint (optional)')
+                        help='Path to trained model checkpoint (optional)')
     parser.add_argument('--n-samples', type=int, default=10,
-                       help='Number of samples to generate')
+                        help='Number of samples to generate')
     parser.add_argument('--z-dim', type=int, default=128,
-                       help='Latent dimension')
+                        help='Latent dimension')
     parser.add_argument('--seed', type=int, default=None,
-                       help='Random seed')
+                        help='Random seed')
     return parser.parse_args()
 
 
@@ -297,9 +306,10 @@ def main():
 
     print("[INFO] Loading dataset...")
     dataset = ProcessDataset()
-    dataset.load_from_csv(args.data, case_id_col='case_id', activity_col='activity')
+    dataset.load_from_csv(args.data, case_id_col='case_id',
+                          activity_col='activity')
 
-    print(f"[INFO] Dataset: {len(dataset.traces)} traces, "
+    print(f"[INFO] Dataset: {len(dataset.data)} traces, "
           f"{dataset.max_activities} activities, "
           f"{len(dataset.flow_encoder)} flow types")
 
@@ -317,7 +327,7 @@ def main():
         embedding_dim=args.z_dim,
         decoder_units=[128, 256, 512],
         discriminator_units=[128, 64],
-        mlp_units=[64],
+        mlp_units=64,
         dropout_rate=0.3
     )
 

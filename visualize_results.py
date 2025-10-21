@@ -12,24 +12,25 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 from utils.process_dataset import ProcessDataset
-from models.process_gan_tf2 import ProcessGAN
+from models.process_gan import ProcessGAN
 from utils.visualization import ProcessGraphVisualizer, plot_training_metrics
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Visualize ProcessGAN generated graphs')
+    parser = argparse.ArgumentParser(
+        description='Visualize ProcessGAN generated graphs')
     parser.add_argument('--data', type=str, required=True,
-                       help='Path to event log CSV file')
+                        help='Path to event log CSV file')
     parser.add_argument('--model', type=str, default=None,
-                       help='Path to trained model checkpoint (optional)')
+                        help='Path to trained model checkpoint (optional)')
     parser.add_argument('--n-samples', type=int, default=5,
-                       help='Number of graphs to generate and visualize')
+                        help='Number of graphs to generate and visualize')
     parser.add_argument('--output', type=str, default='visualizations',
-                       help='Output directory for visualizations')
+                        help='Output directory for visualizations')
     parser.add_argument('--z-dim', type=int, default=128,
-                       help='Latent dimension')
+                        help='Latent dimension')
     parser.add_argument('--seed', type=int, default=42,
-                       help='Random seed')
+                        help='Random seed')
     return parser.parse_args()
 
 
@@ -45,11 +46,13 @@ def main():
 
     print(f"[INFO] Loading dataset from {args.data}...")
     dataset = ProcessDataset()
-    dataset.load_from_csv(args.data, case_id_col='case_id', activity_col='activity')
+    dataset.load_from_csv(args.data, case_id_col='case_id',
+                          activity_col='activity')
     dataset.split_train_val_test(train_ratio=0.8, val_ratio=0.1)
 
     print(f"[INFO] Dataset loaded: {len(dataset.traces)} traces")
-    print(f"[INFO]   Activities: {dataset.max_activities}, Flow types: {len(dataset.flow_encoder)}")
+    print(
+        f"[INFO]   Activities: {dataset.max_activities}, Flow types: {len(dataset.flow_encoder)}")
 
     # Create visualizer
     activity_decoder = {v: k for k, v in dataset.activity_encoder.items()}
@@ -82,7 +85,8 @@ def main():
 
         # Get node labels
         node_indices = np.argmax(nodes, axis=-1)
-        node_labels = [activity_decoder.get(idx, 'PAD') for idx in node_indices]
+        node_labels = [activity_decoder.get(
+            idx, 'PAD') for idx in node_indices]
 
         # Graph visualization
         fig = visualizer.visualize_graph(
@@ -181,7 +185,8 @@ def main():
 
     # Side-by-side comparison
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle('Real vs Generated Process Graphs', fontsize=16, fontweight='bold')
+    fig.suptitle('Real vs Generated Process Graphs',
+                 fontsize=16, fontweight='bold')
 
     for idx in range(2):
         # Real graph
@@ -219,12 +224,14 @@ def main():
     print(f"\n[INFO] Statistics:")
     print(f"  Real traces:")
     real_lengths = [len(t) for t in dataset.traces]
-    print(f"    Average length: {np.mean(real_lengths):.2f} ± {np.std(real_lengths):.2f}")
+    print(
+        f"    Average length: {np.mean(real_lengths):.2f} ± {np.std(real_lengths):.2f}")
     print(f"    Min/Max length: {min(real_lengths)} / {max(real_lengths)}")
 
     print(f"\n  Generated traces:")
     gen_lengths = [len(t) for t in traces]
-    print(f"    Average length: {np.mean(gen_lengths):.2f} ± {np.std(gen_lengths):.2f}")
+    print(
+        f"    Average length: {np.mean(gen_lengths):.2f} ± {np.std(gen_lengths):.2f}")
     print(f"    Min/Max length: {min(gen_lengths)} / {max(gen_lengths)}")
 
     print(f"\n[INFO] All visualizations saved to: {output_dir.absolute()}")

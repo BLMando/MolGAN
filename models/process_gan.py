@@ -1,342 +1,369 @@
 """
-ProcessGAN: GAN model for process mining event log generation
+ProcessGAN Model for TensorFlow 2.x
 
-Adapts GraphGANModel architecture for process mining domain:
-- Generator: z → (adjacency_matrix, node_vector)
-- Discriminator: (adjacency_matrix, node_vector) → real/fake score
-- Uses Gumbel-Softmax for differentiability
-- R-GCN discriminator for graph processing
+Modern implementation using tf.keras.Model and eager execution.
+Compatible with TensorFlow 2.15+ and Python 3.10+.
 """
 
 import numpy as np
 import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
 
-from models import postprocess_logits
-from utils.layers import multi_dense_layers, multi_graph_convolution_layers, graph_aggregation_layer
 
-
-class ProcessGANModel(object):
+class ProcessGenerator(keras.Model):
     """
-    GAN model for generating process mining traces
+    Generator network: z → (Adjacency, Nodes)
 
-    Architecture:
-    - Generator: Dense layers → (Adjacency, Nodes)
-    - Discriminator: R-GCN → Score [0,1]
-    - Value Network: For reinforcement learning (optional)
+    Transforms latent vector z into process trace represented as graph.
     """
 
     def __init__(self, max_activities, flow_types, activity_types, embedding_dim,
-                 decoder_units, discriminator_units,
-                 soft_gumbel_softmax=False, hard_gumbel_softmax=False,
-                 batch_discriminator=False):
+                 decoder_units=(128, 256, 512), dropout_rate=0.0, enforce_start=False, **kwargs):
         """
-        Initialize ProcessGAN model
+        Initialize Generator
 
         Args:
             max_activities: Maximum number of activities per trace
-            flow_types: Number of flow control types (SEQUENCE, XOR, AND, LOOP, SKIP)
-            activity_types: Number of activity types (Start, Submit, Review, etc.)
+            flow_types: Number of flow control types
+            activity_types: Number of activity types
             embedding_dim: Dimension of latent space z
-            decoder_units: Tuple of units for generator dense layers (e.g., (128, 256, 512))
-            discriminator_units: Tuple of units for discriminator (e.g., ((128, 64), 128))
-            soft_gumbel_softmax: Use soft Gumbel-Softmax
-            hard_gumbel_softmax: Use hard Gumbel-Softmax (straight-through estimator)
-            batch_discriminator: Use batch discrimination layer
-        """
-        self.vertexes = max_activities
-        self.edges = flow_types
-        self.nodes = activity_types
-        self.embedding_dim = embedding_dim
-        self.decoder_units = decoder_units
-        self.discriminator_units = discriminator_units
-        self.batch_discriminator = batch_discriminator
-
-        # Placeholders
-        self.training = tf.placeholder_with_default(False, shape=())
-        self.dropout_rate = tf.placeholder_with_default(0., shape=())
-        self.soft_gumbel_softmax = tf.placeholder_with_default(soft_gumbel_softmax, shape=())
-        self.hard_gumbel_softmax = tf.placeholder_with_default(hard_gumbel_softmax, shape=())
-        self.temperature = tf.placeholder_with_default(1., shape=())
-
-        # Input placeholders
-        self.edges_labels = tf.placeholder(dtype=tf.int64, shape=(None, max_activities, max_activities))
-        self.nodes_labels = tf.placeholder(dtype=tf.int64, shape=(None, max_activities))
-        self.embeddings = tf.placeholder(dtype=tf.float32, shape=(None, embedding_dim))
-
-        # Reward placeholders (for RL)
-        self.rewardR = tf.placeholder(dtype=tf.float32, shape=(None, 1))
-        self.rewardF = tf.placeholder(dtype=tf.float32, shape=(None, 1))
-
-        # Convert labels to one-hot
-        self.adjacency_tensor = tf.one_hot(self.edges_labels, depth=flow_types, dtype=tf.float32)
-        self.node_tensor = tf.one_hot(self.nodes_labels, depth=activity_types, dtype=tf.float32)
-
-        # Build generator
-        with tf.variable_scope('generator'):
-            self.edges_logits, self.nodes_logits = self.generator(
-                self.embeddings,
-                decoder_units,
-                max_activities,
-                flow_types,
-                activity_types,
-                training=self.training,
-                dropout_rate=self.dropout_rate
-            )
-
-        # Process generator outputs
-        with tf.name_scope('outputs'):
-            (self.edges_softmax, self.nodes_softmax), \
-            (self.edges_argmax, self.nodes_argmax), \
-            (self.edges_gumbel_logits, self.nodes_gumbel_logits), \
-            (self.edges_gumbel_softmax, self.nodes_gumbel_softmax), \
-            (self.edges_gumbel_argmax, self.nodes_gumbel_argmax) = postprocess_logits(
-                (self.edges_logits, self.nodes_logits),
-                temperature=self.temperature
-            )
-
-            # Select output based on Gumbel-Softmax mode
-            self.edges_hat = tf.case(
-                {
-                    self.soft_gumbel_softmax: lambda: self.edges_gumbel_softmax,
-                    self.hard_gumbel_softmax: lambda: tf.stop_gradient(
-                        self.edges_gumbel_argmax - self.edges_gumbel_softmax
-                    ) + self.edges_gumbel_softmax
-                },
-                default=lambda: self.edges_softmax,
-                exclusive=True
-            )
-
-            self.nodes_hat = tf.case(
-                {
-                    self.soft_gumbel_softmax: lambda: self.nodes_gumbel_softmax,
-                    self.hard_gumbel_softmax: lambda: tf.stop_gradient(
-                        self.nodes_gumbel_argmax - self.nodes_gumbel_softmax
-                    ) + self.nodes_gumbel_softmax
-                },
-                default=lambda: self.nodes_softmax,
-                exclusive=True
-            )
-
-        # Build discriminator
-        with tf.name_scope('D_x_real'):
-            self.logits_real, self.features_real = self.discriminator(
-                (self.adjacency_tensor, None, self.node_tensor),
-                units=discriminator_units
-            )
-
-        with tf.name_scope('D_x_fake'):
-            self.logits_fake, self.features_fake = self.discriminator(
-                (self.edges_hat, None, self.nodes_hat),
-                units=discriminator_units
-            )
-
-        # Build value network (for RL)
-        with tf.name_scope('V_x_real'):
-            self.value_logits_real = self.value_network(
-                (self.adjacency_tensor, None, self.node_tensor),
-                units=discriminator_units
-            )
-
-        with tf.name_scope('V_x_fake'):
-            self.value_logits_fake = self.value_network(
-                (self.edges_hat, None, self.nodes_hat),
-                units=discriminator_units
-            )
-
-    def generator(self, embeddings, units, vertexes, edges, nodes, training, dropout_rate):
-        """
-        Generator network: z → (Adjacency, Nodes)
-
-        Args:
-            embeddings: Latent vector z (batch, embedding_dim)
-            units: Tuple of hidden units (e.g., (128, 256, 512))
-            vertexes: Max number of activities
-            edges: Number of flow types
-            nodes: Number of activity types
-            training: Training mode flag
+            decoder_units: Tuple of hidden units for dense layers
             dropout_rate: Dropout rate
-
-        Returns:
-            edges_logits: (batch, vertexes, vertexes, edges)
-            nodes_logits: (batch, vertexes, nodes)
         """
-        # Multi-layer dense network
-        output = multi_dense_layers(
-            embeddings,
-            units=units,
-            activation=tf.nn.tanh,
-            dropout_rate=dropout_rate,
-            training=training
+        super(ProcessGenerator, self).__init__(**kwargs)
+
+        self.max_activities = max_activities
+        self.flow_types = flow_types
+        self.activity_types = activity_types
+        self.embedding_dim = embedding_dim
+        self.dropout_rate = dropout_rate
+        self.enforce_start = enforce_start
+
+        # Dense layers
+        self.dense_layers = []
+        for units in decoder_units:
+            self.dense_layers.append(layers.Dense(units, activation='tanh'))
+            self.dense_layers.append(layers.Dropout(dropout_rate))
+
+        # Adjacency matrix branch
+        self.edges_dense = layers.Dense(
+            flow_types * max_activities * max_activities,
+            activation=None,
+            name='edges_logits'
         )
 
-        # Branch A: Adjacency matrix logits
-        with tf.variable_scope('edges_logits'):
-            edges_logits = tf.layers.dense(
-                inputs=output,
-                units=edges * vertexes * vertexes,
-                activation=None
-            )
-            edges_logits = tf.reshape(edges_logits, (-1, edges, vertexes, vertexes))
+        # Node vector branch
+        self.nodes_dense = layers.Dense(
+            max_activities * activity_types,
+            activation=None,
+            name='nodes_logits'
+        )
 
-            # Transpose to (batch, vertexes, vertexes, edges)
-            edges_logits = tf.transpose(edges_logits, (0, 2, 3, 1))
-
-            # Optional: Make symmetric for undirected graphs
-            # For process mining, typically directed, so comment out
-            # edges_logits = (edges_logits + tf.matrix_transpose(edges_logits)) / 2
-
-            edges_logits = tf.layers.dropout(edges_logits, dropout_rate, training=training)
-
-        # Branch B: Node vector logits
-        with tf.variable_scope('nodes_logits'):
-            nodes_logits = tf.layers.dense(
-                inputs=output,
-                units=vertexes * nodes,
-                activation=None
-            )
-            nodes_logits = tf.reshape(nodes_logits, (-1, vertexes, nodes))
-            nodes_logits = tf.layers.dropout(nodes_logits, dropout_rate, training=training)
-
-        return edges_logits, nodes_logits
-
-    def discriminator(self, inputs, units):
+    def call(self, embeddings, training=False, temperature=1.0):
         """
-        Discriminator network: (Adjacency, Nodes) → Score
-
-        Uses Relational Graph Convolutional Network (R-GCN)
+        Forward pass
 
         Args:
-            inputs: Tuple (adjacency, hidden, nodes)
-            units: Tuple of units ((rgcn_units,), mlp_units, (mlp_units2,))
+            embeddings: Latent vectors z (batch, embedding_dim)
+            training: Training mode flag
+            temperature: Gumbel-Softmax temperature
 
         Returns:
-            logits: Score (batch, 1)
-            features: Intermediate features (batch, features_dim)
+            edges: Adjacency matrices (batch, max_act, max_act, flow_types)
+            nodes: Node vectors (batch, max_act, activity_types)
         """
-        with tf.variable_scope('discriminator', reuse=tf.AUTO_REUSE):
-            # R-GCN layers
-            outputs0 = self.rgcn_encoder(
-                inputs,
-                units=units[:-1],
-                training=self.training,
-                dropout_rate=self.dropout_rate
-            )
+        # batch_size = tf.shape(embeddings)[0]
+        
+        # Pass through dense layers
+        h = embeddings
+        for layer in self.dense_layers:
+            if isinstance(layer, layers.Dropout):
+                h = layer(h, training=training)
+            else:
+                h = layer(h)
 
-            # MLP classifier
-            outputs1 = multi_dense_layers(
-                outputs0,
-                units=units[-1],
-                activation=tf.nn.tanh,
-                training=self.training,
-                dropout_rate=self.dropout_rate
-            )
+        # Adjacency matrix logits
+        edges_logits = self.edges_dense(h)
+        edges_logits = tf.reshape(
+            edges_logits,
+            (-1, self.flow_types, self.max_activities, self.max_activities)
+        )
+        # Transpose to (batch, max_act, max_act, flow_types)
+        edges_logits = tf.transpose(edges_logits, (0, 2, 3, 1))
 
-            # Optional: Batch discrimination
-            if self.batch_discriminator:
-                outputs_batch = tf.layers.dense(outputs0, units[-2] // 8, activation=tf.tanh)
-                outputs_batch = tf.layers.dense(
-                    tf.reduce_mean(outputs_batch, 0, keep_dims=True),
-                    units[-2] // 8,
-                    activation=tf.nn.tanh
-                )
-                outputs_batch = tf.tile(outputs_batch, (tf.shape(outputs0)[0], 1))
-                outputs1 = tf.concat((outputs1, outputs_batch), -1)
+        # Node vector logits
+        nodes_logits = self.nodes_dense(h)
+        nodes_logits = tf.reshape(
+            nodes_logits,
+            (-1, self.max_activities, self.activity_types)
+        )
 
-            # Final score
-            logits = tf.layers.dense(outputs1, units=1)
+        # Apply Gumbel-Softmax
+        edges = self.gumbel_softmax(edges_logits, temperature, training)
+        nodes = self.gumbel_softmax(nodes_logits, temperature, training)
+        
+        # Hard constraint: Force first node to be 'Start' (index 0) if enabled
+        # if self.enforce_start:
+        #     start_onehot = tf.one_hot(
+        #         tf.zeros(batch_size, dtype=tf.int32),
+        #         depth=self.activity_types,
+        #         dtype=tf.float32
+        #     )
+        #     nodes = tf.concat([
+        #         tf.expand_dims(start_onehot, axis=1),
+        #         nodes[:, 1:, :]
+        #     ], axis=1)
 
-        return logits, outputs1
+        return edges, nodes
 
-    def rgcn_encoder(self, inputs, units, training, dropout_rate):
+    @staticmethod
+    def gumbel_softmax(logits, temperature=1.0, training=True, hard=False):
         """
-        R-GCN encoder for graph processing
+        Gumbel-Softmax sampling
 
         Args:
-            inputs: Tuple (adjacency, hidden, nodes)
-            units: Tuple of RGCN hidden dimensions
+            logits: Input logits
+            temperature: Softmax temperature
+            training: If True, add Gumbel noise
+            hard: If True, use straight-through estimator
 
         Returns:
-            Graph embedding (batch, features)
+            Differentiable samples
         """
-        adjacency_tensor, hidden_tensor, node_tensor = inputs
+        if training:
+            # Add Gumbel noise
+            uniform = tf.random.uniform(tf.shape(logits), minval=0, maxval=1)
+            gumbel_noise = -tf.math.log(-tf.math.log(uniform + 1e-20) + 1e-20)
+            logits = logits + gumbel_noise
 
-        # R-GCN convolution layers
-        with tf.variable_scope('graph_convolutions'):
-            output = multi_graph_convolution_layers(
-                inputs,
-                units=units[0],
-                activation=tf.nn.tanh,
-                dropout_rate=dropout_rate,
-                training=training
+        # Softmax
+        y_soft = tf.nn.softmax(logits / temperature)
+
+        if hard:
+            # Straight-through estimator
+            y_hard = tf.one_hot(
+                tf.argmax(logits, axis=-1),
+                depth=tf.shape(logits)[-1],
+                dtype=logits.dtype
             )
+            y = tf.stop_gradient(y_hard - y_soft) + y_soft
+        else:
+            y = y_soft
 
-        # Graph aggregation (pooling)
-        with tf.variable_scope('graph_aggregation'):
-            annotations = tf.concat(
-                (output, hidden_tensor, node_tensor) if hidden_tensor is not None else (output, node_tensor),
-                -1
-            )
+        return y
 
-            output = graph_aggregation_layer(
-                annotations,
-                units=units[1],
-                activation=tf.nn.tanh,
-                dropout_rate=dropout_rate,
-                training=training
-            )
+    def sample_z(self, batch_size):
+        """Sample latent vectors from standard normal"""
+        return np.random.normal(0, 1, size=(batch_size, self.embedding_dim)).astype(np.float32)
 
-        return output
 
-    def value_network(self, inputs, units):
+class ProcessDiscriminator(keras.Model):
+    """
+    Discriminator network: (Adjacency, Nodes) → Score [0,1]
+
+    Uses Relational Graph Convolutional Network (R-GCN) to process graphs.
+    """
+
+    def __init__(self, flow_types, activity_types, rgcn_units=(128, 64),
+                 mlp_units=128, dropout_rate=0.0, **kwargs):
         """
-        Value network for reinforcement learning
-
-        Estimates expected reward for a given trace
+        Initialize Discriminator
 
         Args:
-            inputs: Tuple (adjacency, hidden, nodes)
-            units: Network units
-
-        Returns:
-            value: Estimated reward (batch, 1)
+            flow_types: Number of flow control types
+            activity_types: Number of activity types
+            rgcn_units: Tuple of R-GCN hidden dimensions
+            mlp_units: MLP classifier units
+            dropout_rate: Dropout rate
         """
-        with tf.variable_scope('value', reuse=tf.AUTO_REUSE):
-            outputs = self.rgcn_encoder(
-                inputs,
-                units=units[:-1],
-                training=self.training,
-                dropout_rate=self.dropout_rate
-            )
+        super(ProcessDiscriminator, self).__init__(**kwargs)
 
-            outputs = multi_dense_layers(
-                outputs,
-                units=units[-1],
-                activation=tf.nn.tanh,
-                training=self.training,
-                dropout_rate=self.dropout_rate
-            )
+        self.flow_types = flow_types
+        self.activity_types = activity_types
+        self.rgcn_units = rgcn_units
+        self.mlp_units = mlp_units
+        self.dropout_rate = dropout_rate
 
-            # Value output (sigmoid for [0,1] range like reward)
-            outputs = tf.layers.dense(outputs, units=1, activation=tf.nn.sigmoid)
+        # R-GCN layers
+        self.rgcn_layers = []
+        for units in rgcn_units:
+            # One dense layer per flow type
+            flow_dense_layers = [
+                layers.Dense(units, activation=None)
+                for _ in range(flow_types)
+            ]
+            self.rgcn_layers.append({
+                'flow_layers': flow_dense_layers,
+                'self_layer': layers.Dense(units, activation=None),
+                'dropout': layers.Dropout(dropout_rate)
+            })
 
-        return outputs
+        # Graph pooling (attention-based)
+        self.attention_dense = layers.Dense(1, activation='sigmoid', name='attention')
+        self.pooling_dense = layers.Dense(mlp_units, activation='tanh', name='pooling')
 
-    def sample_z(self, batch_dim):
+        # MLP classifier
+        self.mlp = keras.Sequential([
+            layers.Dense(128, activation='tanh'),
+            layers.Dropout(dropout_rate),
+            layers.Dense(64, activation='tanh'),
+            layers.Dropout(dropout_rate),
+            layers.Dense(1, activation=None)  # Logits (not sigmoid, for WGAN)
+        ], name='mlp_classifier')
+
+    def call(self, adjacency, nodes, training=False):
         """
-        Sample latent vectors from standard normal distribution
+        Forward pass
 
         Args:
-            batch_dim: Batch size
+            adjacency: Adjacency matrices (batch, max_act, max_act, flow_types)
+            nodes: Node vectors (batch, max_act, activity_types)
+            training: Training mode flag
 
         Returns:
-            Latent vectors (batch_dim, embedding_dim)
+            score: Discriminator score (batch, 1)
+            features: Intermediate features for feature matching (batch, mlp_units)
         """
-        return np.random.normal(0, 1, size=(batch_dim, self.embedding_dim))
+        # Initial node features
+        h = nodes  # (batch, max_act, activity_types)
+
+        # R-GCN layers
+        for rgcn_layer in self.rgcn_layers:
+            # Aggregate messages by flow type
+            messages = []
+            for flow_type in range(self.flow_types):
+                # Extract adjacency for this flow type
+                adj_slice = adjacency[:, :, :, flow_type]  # (batch, max_act, max_act)
+
+                # Transform node features
+                transformed = rgcn_layer['flow_layers'][flow_type](h)
+
+                # Message passing: multiply by adjacency
+                message = tf.matmul(adj_slice, transformed)
+                messages.append(message)
+
+            # Aggregate all flow types
+            aggregated = tf.reduce_sum(tf.stack(messages, axis=1), axis=1)
+
+            # Self-connection
+            self_msg = rgcn_layer['self_layer'](h)
+
+            # Update with activation
+            h = tf.nn.tanh(aggregated + self_msg)
+            h = rgcn_layer['dropout'](h, training=training)
+
+        # Graph pooling (attention-based)
+        attention_weights = self.attention_dense(h)  # (batch, max_act, 1)
+        pooled_features = self.pooling_dense(h)      # (batch, max_act, mlp_units)
+        graph_embedding = tf.reduce_sum(attention_weights * pooled_features, axis=1)
+
+        # MLP classifier
+        score = self.mlp(graph_embedding, training=training)
+
+        return score, graph_embedding  # Return features for feature matching
 
 
-# ─────────────────────────────────────────────────────────
+class ProcessValueNetwork(keras.Model):
+    """
+    Value network for Reinforcement Learning
+
+    Estimates expected reward for a given trace.
+    """
+
+    def __init__(self, flow_types, activity_types, rgcn_units=(128, 64),
+                 mlp_units=128, dropout_rate=0.0, **kwargs):
+        """Initialize Value Network (same architecture as Discriminator)"""
+        super(ProcessValueNetwork, self).__init__(**kwargs)
+
+        # Reuse discriminator architecture
+        self.discriminator = ProcessDiscriminator(
+            flow_types=flow_types,
+            activity_types=activity_types,
+            rgcn_units=rgcn_units,
+            mlp_units=mlp_units,
+            dropout_rate=dropout_rate
+        )
+
+        # Final value layer (sigmoid for [0,1] range like reward)
+        self.value_layer = layers.Dense(1, activation='sigmoid', name='value_output')
+
+    def call(self, adjacency, nodes, training=False):
+        """
+        Forward pass
+
+        Returns:
+            value: Estimated reward (batch, 1) ∈ [0,1]
+        """
+        _, features = self.discriminator(adjacency, nodes, training=training)
+        value = self.value_layer(features)
+        return value
+
+
+class ProcessGAN:
+    """
+    Complete ProcessGAN model wrapper
+
+    Combines Generator, Discriminator, and Value Network.
+    """
+
+    def __init__(self, max_activities, flow_types, activity_types, embedding_dim,
+                 decoder_units=(128, 256, 512), discriminator_units=(128, 64),
+                 mlp_units=128, dropout_rate=0.0, enforce_start=False):
+        """
+        Initialize ProcessGAN
+
+        Args:
+            max_activities: Maximum number of activities per trace
+            flow_types: Number of flow control types
+            activity_types: Number of activity types
+            embedding_dim: Dimension of latent space
+            decoder_units: Generator dense layer units
+            discriminator_units: R-GCN layer units
+            mlp_units: MLP classifier units
+            dropout_rate: Dropout rate
+        """
+        self.max_activities = max_activities
+        self.flow_types = flow_types
+        self.activity_types = activity_types
+        self.embedding_dim = embedding_dim
+        self.enforce_start = enforce_start
+
+        # Build models
+        self.generator = ProcessGenerator(
+            max_activities=max_activities,
+            flow_types=flow_types,
+            activity_types=activity_types,
+            embedding_dim=embedding_dim,
+            decoder_units=decoder_units,
+            dropout_rate=dropout_rate,
+            enforce_start=enforce_start
+        )
+
+        self.discriminator = ProcessDiscriminator(
+            flow_types=flow_types,
+            activity_types=activity_types,
+            rgcn_units=discriminator_units,
+            mlp_units=mlp_units,
+            dropout_rate=dropout_rate
+        )
+
+        self.value_network = ProcessValueNetwork(
+            flow_types=flow_types,
+            activity_types=activity_types,
+            rgcn_units=discriminator_units,
+            mlp_units=mlp_units,
+            dropout_rate=dropout_rate
+        )
+
+    def sample_z(self, batch_size):
+        """Sample latent vectors"""
+        return self.generator.sample_z(batch_size)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # UTILITY FUNCTIONS
-# ─────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 
 def matrices_to_traces(adjacency_matrices, node_vectors, dataset):
     """
@@ -366,81 +393,76 @@ def matrices_to_traces(adjacency_matrices, node_vectors, dataset):
 
 
 if __name__ == '__main__':
-    # Example usage
-    print("=" * 60)
-    print("ProcessGAN Model Test")
-    print("=" * 60)
+    # Test ProcessGAN TF2
+    print("=" * 70)
+    print("ProcessGAN TensorFlow 2.x Test")
+    print("=" * 70)
 
-    # Model configuration
+    # Configuration
     config = {
         'max_activities': 10,
         'flow_types': 5,
         'activity_types': 8,
         'embedding_dim': 16,
         'decoder_units': (128, 256, 512),
-        'discriminator_units': ((128, 64), 128, (128, 64)),
+        'discriminator_units': (128, 64),
+        'mlp_units': 128,
     }
 
-    print("\nModel Configuration:")
+    print("\nConfiguration:")
     for key, value in config.items():
         print(f"  {key}: {value}")
 
     # Create model
-    print("\nBuilding ProcessGAN model...")
-    model = ProcessGANModel(
-        max_activities=config['max_activities'],
-        flow_types=config['flow_types'],
-        activity_types=config['activity_types'],
-        embedding_dim=config['embedding_dim'],
-        decoder_units=config['decoder_units'],
-        discriminator_units=config['discriminator_units'],
-        soft_gumbel_softmax=True,
-        hard_gumbel_softmax=False,
-        batch_discriminator=False
-    )
+    print("\nBuilding ProcessGAN...")
+    model = ProcessGAN(**config)
 
-    print("✓ Generator built")
-    print("✓ Discriminator built")
-    print("✓ Value network built")
+    print("✓ Generator created")
+    print("✓ Discriminator created")
+    print("✓ Value network created")
 
     # Test forward pass
     print("\nTesting forward pass...")
-    with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
+    batch_size = 4
 
-        # Sample latent vectors
-        batch_size = 4
-        z = model.sample_z(batch_size)
-        print(f"  Latent vectors shape: {z.shape}")
+    # Generate samples
+    z = model.sample_z(batch_size)
+    print(f"  Latent vectors: {z.shape}")
 
-        # Generate traces
-        edges, nodes = sess.run(
-            [model.edges_softmax, model.nodes_softmax],
-            feed_dict={model.embeddings: z, model.training: False}
-        )
+    edges, nodes = model.generator(z, training=False)
+    print(f"  Generated edges: {edges.shape}")
+    print(f"  Generated nodes: {nodes.shape}")
 
-        print(f"  Generated edges shape: {edges.shape}")
-        print(f"  Generated nodes shape: {nodes.shape}")
+    # Discriminator
+    adj_labels = tf.one_hot(
+        np.zeros((batch_size, config['max_activities'], config['max_activities']), dtype=np.int32),
+        depth=config['flow_types']
+    )
+    node_labels = tf.one_hot(
+        np.zeros((batch_size, config['max_activities']), dtype=np.int32),
+        depth=config['activity_types']
+    )
 
-        # Test discriminator
-        adj_labels = np.zeros((batch_size, config['max_activities'], config['max_activities']), dtype=np.int64)
-        node_labels = np.zeros((batch_size, config['max_activities']), dtype=np.int64)
+    score, features = model.discriminator(adj_labels, node_labels, training=False)
+    print(f"  Discriminator score: {score.shape}")
+    print(f"  Features: {features.shape}")
 
-        D_score = sess.run(
-            model.logits_real,
-            feed_dict={
-                model.edges_labels: adj_labels,
-                model.nodes_labels: node_labels,
-                model.training: False
-            }
-        )
+    # Value network
+    value = model.value_network(edges, nodes, training=False)
+    print(f"  Value estimate: {value.shape}")
+    print(f"  Value range: [{value.numpy().min():.3f}, {value.numpy().max():.3f}]")
 
-        print(f"  Discriminator scores shape: {D_score.shape}")
+    # Count parameters
+    total_g = sum([np.prod(v.shape) for v in model.generator.trainable_variables])
+    total_d = sum([np.prod(v.shape) for v in model.discriminator.trainable_variables])
+    total_v = sum([np.prod(v.shape) for v in model.value_network.trainable_variables])
 
-        # Count parameters
-        total_params = np.sum([np.prod(v.shape) for v in tf.trainable_variables()])
-        print(f"\n  Total trainable parameters: {total_params:,}")
+    print(f"\nTrainable parameters:")
+    print(f"  Generator: {total_g:,}")
+    print(f"  Discriminator: {total_d:,}")
+    print(f"  Value Network: {total_v:,}")
+    print(f"  Total: {total_g + total_d + total_v:,}")
 
-    print("\n" + "=" * 60)
-    print("ProcessGAN model test completed successfully!")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("ProcessGAN TF2 test completed successfully!")
+    print("=" * 70)

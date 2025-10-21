@@ -95,7 +95,7 @@ git clone https://github.com/BLMando/MolGAN.git
 cd MolGAN
 
 # Create and activate environment
-conda env create -f environment_processggan.yml
+conda env create -f environment.yml
 conda activate ProcessGAN
 
 # Verify installation
@@ -118,7 +118,7 @@ python -c "import tensorflow as tf; import pm4py; print(f'✅ TensorFlow {tf.__v
 Test that everything works:
 
 ```bash
-python example_process.py \
+python trainer.py \
     --data data/helpdesk_parsed.xes \
     --input-format xes \
     --epochs 5

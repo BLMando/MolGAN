@@ -1,22 +1,18 @@
 """
 Graph Loader for ProcessGAN
 
-Loads various graph formats (Petri nets, BPMN, GraphML, NetworkX) and converts
-them to ProcessGAN's internal representation (adjacency matrices + node features).
+Loads Petri nets (PNML format) and converts them to ProcessGAN's internal 
+representation (adjacency matrices + node features).
 
 Supported formats:
 - Petri Nets (PNML via pm4py)
-- BPMN (BPMN 2.0 XML via pm4py)
-- GraphML (via NetworkX)
-- NetworkX DiGraph (direct Python objects)
-- Raw adjacency matrices + node lists
 
 Author: ProcessGAN Team
 Date: 2024
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, Tuple, List
 from pathlib import Path
 
 try:
@@ -24,14 +20,7 @@ try:
     PM4PY_AVAILABLE = True
 except ImportError:
     PM4PY_AVAILABLE = False
-    print("[WARNING] pm4py not available. Petri net and BPMN loading disabled.")
-
-try:
-    import networkx as nx
-    NETWORKX_AVAILABLE = True
-except ImportError:
-    NETWORKX_AVAILABLE = False
-    print("[WARNING] NetworkX not available. GraphML and NetworkX loading disabled.")
+    print("[WARNING] pm4py not available. Petri net loading disabled.")
 
 
 class GraphLoader:
@@ -248,319 +237,21 @@ class GraphLoader:
         # Default: sequential
         return self.flow_encoder['SEQUENCE']
 
-    # ================================================================
-    # BPMN Loading
-    # ================================================================
-
-    def load_bpmn(self, bpmn_path: str) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
-        """
-        Load BPMN model from XML file
-
-        Args:
-            bpmn_path: Path to BPMN XML file
-
-        Returns:
-            (adjacency, nodes, activity_encoder, flow_encoder)
-        """
-        if not PM4PY_AVAILABLE:
-            raise ImportError("pm4py is required for BPMN loading. Install with: pip install pm4py")
-
-        if not Path(bpmn_path).exists():
-            raise FileNotFoundError(f"BPMN file not found: {bpmn_path}")
-
-        print(f"[INFO] Loading BPMN from {bpmn_path}...")
-
-        # Load BPMN using pm4py
-        bpmn_graph = pm4py.read_bpmn(bpmn_path)
-
-        # Extract nodes (tasks, gateways, events)
-        nodes_list = bpmn_graph.get_nodes()
-        flows = bpmn_graph.get_flows()
-
-        print(f"[INFO] BPMN has {len(nodes_list)} nodes, {len(flows)} flows")
-
-        # Filter to tasks only (activities)
-        tasks = [node for node in nodes_list if hasattr(node, 'get_name')
-                and node.__class__.__name__ in ['Task', 'Activity']]
-
-        # Build activity list
-        activity_names = []
-        node_to_idx = {}
-
-        for i, task in enumerate(tasks):
-            name = task.get_name() if hasattr(task, 'get_name') else f"Task_{i}"
-            activity_names.append(name)
-            node_to_idx[task.get_id() if hasattr(task, 'get_id') else task] = i
-
-        # Build node vector
-        n = len(activity_names)
-        nodes_vec = np.zeros(n, dtype=np.int32)
-        for i, name in enumerate(activity_names):
-            nodes_vec[i] = self._encode_activity(name)
-
-        # Build adjacency from flows
-        adjacency = np.zeros((n, n), dtype=np.int32)
-
-        for flow in flows:
-            source_id = flow.get_source() if hasattr(flow, 'get_source') else None
-            target_id = flow.get_target() if hasattr(flow, 'get_target') else None
-
-            if source_id in node_to_idx and target_id in node_to_idx:
-                idx1 = node_to_idx[source_id]
-                idx2 = node_to_idx[target_id]
-
-                # Detect flow type from gateways
-                flow_type = self._detect_bpmn_flow_type(bpmn_graph, flow, source_id, target_id)
-                adjacency[idx1, idx2] = flow_type
-
-        # Pad to max_activities
-        adjacency, nodes_vec = self._pad_graph(adjacency, nodes_vec)
-
-        print(f"[INFO] Converted to {len(activity_names)} activities")
-
-        return adjacency, nodes_vec, self.activity_encoder.copy(), self.flow_encoder.copy()
-
-    def _detect_bpmn_flow_type(self, bpmn_graph, flow, source_id, target_id) -> int:
-        """Detect flow type in BPMN based on gateways"""
-        # Check if flow goes through gateway
-        nodes = bpmn_graph.get_nodes()
-
-        # Find source and target nodes
-        source_node = next((n for n in nodes if n.get_id() == source_id), None)
-        target_node = next((n for n in nodes if n.get_id() == target_id), None)
-
-        if source_node:
-            node_type = source_node.__class__.__name__
-
-            if 'Parallel' in node_type:
-                return self.flow_encoder['PARALLEL']
-            elif 'Exclusive' in node_type or 'XOR' in node_type:
-                return self.flow_encoder['CHOICE']
-            elif 'Inclusive' in node_type:
-                return self.flow_encoder['CHOICE']
-
-        # Check for loops (back edges)
-        if hasattr(flow, 'is_back_edge') and flow.is_back_edge:
-            return self.flow_encoder['LOOP']
-
-        # Default: sequential
-        return self.flow_encoder['SEQUENCE']
-
-    # ================================================================
-    # GraphML Loading
-    # ================================================================
-
-    def load_graphml(self, graphml_path: str) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
-        """
-        Load graph from GraphML file
-
-        Args:
-            graphml_path: Path to GraphML file
-
-        Returns:
-            (adjacency, nodes, activity_encoder, flow_encoder)
-        """
-        if not NETWORKX_AVAILABLE:
-            raise ImportError("NetworkX is required for GraphML loading. Install with: pip install networkx")
-
-        if not Path(graphml_path).exists():
-            raise FileNotFoundError(f"GraphML file not found: {graphml_path}")
-
-        print(f"[INFO] Loading GraphML from {graphml_path}...")
-
-        # Load using NetworkX
-        G = nx.read_graphml(graphml_path)
-
-        return self.load_networkx(G)
-
-    # ================================================================
-    # NetworkX Loading
-    # ================================================================
-
-    def load_networkx(self, G: Any) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
-        """
-        Load graph from NetworkX DiGraph
-
-        Expected node attributes:
-        - 'label' or 'name': activity name
-
-        Expected edge attributes:
-        - 'type' or 'flow_type': flow type (SEQUENCE, PARALLEL, etc.)
-
-        Args:
-            G: NetworkX DiGraph
-
-        Returns:
-            (adjacency, nodes, activity_encoder, flow_encoder)
-        """
-        if not NETWORKX_AVAILABLE:
-            raise ImportError("NetworkX is required. Install with: pip install networkx")
-
-        print(f"[INFO] Loading NetworkX graph with {G.number_of_nodes()} nodes, {G.number_of_edges()} edges...")
-
-        # Build node mapping
-        node_list = list(G.nodes())
-        n = len(node_list)
-        node_to_idx = {node: i for i, node in enumerate(node_list)}
-
-        # Extract activity names from node attributes
-        activity_names = []
-        for node in node_list:
-            attrs = G.nodes[node]
-            # Try different attribute names
-            name = attrs.get('label', attrs.get('name', attrs.get('activity', str(node))))
-            activity_names.append(name)
-
-        # Build node vector
-        nodes = np.zeros(n, dtype=np.int32)
-        for i, name in enumerate(activity_names):
-            nodes[i] = self._encode_activity(name)
-
-        # Build adjacency matrix
-        adjacency = np.zeros((n, n), dtype=np.int32)
-
-        for edge in G.edges(data=True):
-            source, target, attrs = edge
-            idx1 = node_to_idx[source]
-            idx2 = node_to_idx[target]
-
-            # Get flow type from edge attributes
-            flow_type_str = attrs.get('type', attrs.get('flow_type', 'SEQUENCE'))
-            flow_type_str = flow_type_str.upper()
-
-            if flow_type_str in self.flow_encoder:
-                flow_type = self.flow_encoder[flow_type_str]
-            else:
-                flow_type = self.flow_encoder['SEQUENCE']
-
-            adjacency[idx1, idx2] = flow_type
-
-        # Detect loops (cycles)
-        try:
-            cycles = list(nx.simple_cycles(G))
-            for cycle in cycles:
-                if len(cycle) >= 2:
-                    # Mark edges in cycle as LOOP
-                    for i in range(len(cycle)):
-                        node1 = cycle[i]
-                        node2 = cycle[(i + 1) % len(cycle)]
-                        idx1 = node_to_idx[node1]
-                        idx2 = node_to_idx[node2]
-                        if adjacency[idx1, idx2] == self.flow_encoder['SEQUENCE']:
-                            adjacency[idx1, idx2] = self.flow_encoder['LOOP']
-        except:
-            pass  # If cycle detection fails, skip
-
-        # Pad to max_activities
-        adjacency, nodes = self._pad_graph(adjacency, nodes)
-
-        print(f"[INFO] Converted to {len(activity_names)} activities")
-
-        return adjacency, nodes, self.activity_encoder.copy(), self.flow_encoder.copy()
-
-    # ================================================================
-    # Raw Matrix Loading
-    # ================================================================
-
-    def load_adjacency_matrix(self,
-                              adjacency: np.ndarray,
-                              activity_labels: List[str]) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
-        """
-        Load from raw adjacency matrix and activity labels
-
-        Args:
-            adjacency: (n, n) adjacency matrix with flow type indices
-            activity_labels: List of n activity names
-
-        Returns:
-            (adjacency, nodes, activity_encoder, flow_encoder)
-        """
-        n = len(activity_labels)
-
-        if adjacency.shape[0] != n or adjacency.shape[1] != n:
-            raise ValueError(f"Adjacency shape {adjacency.shape} doesn't match labels length {n}")
-
-        # Build node vector
-        nodes = np.zeros(n, dtype=np.int32)
-        for i, name in enumerate(activity_labels):
-            nodes[i] = self._encode_activity(name)
-
-        # Pad to max_activities
-        adjacency, nodes = self._pad_graph(adjacency, nodes)
-
-        return adjacency, nodes, self.activity_encoder.copy(), self.flow_encoder.copy()
-
 
 # ================================================================
 # Convenience Functions
 # ================================================================
 
-def load_graph(file_path: str,
-               format: Optional[str] = None,
-               max_activities: int = 15) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
+def load_petri_net_file(file_path: str, max_activities: int = 15) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
     """
-    Load graph from file, auto-detecting format from extension
+    Load Petri net from PNML file (convenience function)
 
     Args:
-        file_path: Path to graph file
-        format: Optional format override ('petri', 'bpmn', 'graphml')
+        file_path: Path to PNML file
         max_activities: Maximum number of activities
 
     Returns:
         (adjacency, nodes, activity_encoder, flow_encoder)
     """
     loader = GraphLoader(max_activities=max_activities)
-
-    path = Path(file_path)
-
-    # Auto-detect format from extension
-    if format is None:
-        ext = path.suffix.lower()
-        if ext == '.pnml':
-            format = 'petri'
-        elif ext in ['.bpmn', '.xml']:
-            format = 'bpmn'
-        elif ext == '.graphml':
-            format = 'graphml'
-        else:
-            raise ValueError(f"Cannot auto-detect format from extension: {ext}")
-
-    # Load based on format
-    if format == 'petri':
-        return loader.load_petri_net(file_path)
-    elif format == 'bpmn':
-        return loader.load_bpmn(file_path)
-    elif format == 'graphml':
-        return loader.load_graphml(file_path)
-    else:
-        raise ValueError(f"Unknown format: {format}")
-
-
-def load_graphs_batch(file_paths: List[str],
-                     max_activities: int = 15) -> Tuple[np.ndarray, np.ndarray, Dict, Dict]:
-    """
-    Load multiple graphs and combine into batch
-
-    Args:
-        file_paths: List of paths to graph files
-        max_activities: Maximum number of activities
-
-    Returns:
-        (adjacency_batch, nodes_batch, activity_encoder, flow_encoder)
-        adjacency_batch: (batch_size, max_activities, max_activities)
-        nodes_batch: (batch_size, max_activities)
-    """
-    loader = GraphLoader(max_activities=max_activities)
-
-    adjacency_list = []
-    nodes_list = []
-
-    for file_path in file_paths:
-        adj, nodes, _, _ = load_graph(file_path, max_activities=max_activities)
-        adjacency_list.append(adj)
-        nodes_list.append(nodes)
-
-    adjacency_batch = np.array(adjacency_list)
-    nodes_batch = np.array(nodes_list)
-
-    return adjacency_batch, nodes_batch, loader.activity_encoder, loader.flow_encoder
+    return loader.load_petri_net(file_path)

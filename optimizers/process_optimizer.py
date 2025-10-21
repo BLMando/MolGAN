@@ -1,403 +1,486 @@
 """
-ProcessGANOptimizer: Optimizer for training ProcessGAN
+ProcessGAN Optimizer for TensorFlow 2.x
 
-Implements:
-- Wasserstein GAN loss with gradient penalty
-- Adversarial training (discriminator vs generator)
-- Reinforcement learning integration (reward maximization)
-- Feature matching (optional)
+Modern training implementation using tf.GradientTape and eager execution.
+Implements WGAN-GP with gradient penalty and RL integration.
 """
 
 import tensorflow as tf
+import numpy as np
+import warnings
+import logging
+
+# Suppress TensorFlow gradient warnings for Value Network
+# (Value Network is trained only when lambda_mix < 1.0, causing warnings during @tf.function compilation)
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+warnings.filterwarnings('ignore', message='.*Gradients do not exist.*')
 
 
-class ProcessGANOptimizer(object):
+class ProcessGANTrainer:
     """
-    Optimizer for ProcessGAN training
+    Trainer for ProcessGAN with WGAN-GP + Reinforcement Learning
 
-    Loss components:
-    - Discriminator: Wasserstein loss + gradient penalty
-    - Generator: Adversarial loss + RL reward + feature matching
-    - Value network: Mean squared error for reward prediction
+    Uses modern TF 2.x APIs:
+    - tf.GradientTape for gradients
+    - Eager execution (no session)
+    - tf.keras.optimizers
     """
 
-    def __init__(self, model, learning_rate=1e-3, feature_matching=True,
-                 gradient_penalty_weight=10.0, lambda_adv=0.6, lambda_reward=0.4):
+    def __init__(self, model, dataset=None, learning_rate=1e-4, gradient_penalty_weight=10.0,
+                 lambda_adv=0.6, lambda_reward=0.4):
         """
-        Initialize optimizer
+        Initialize trainer
 
         Args:
-            model: ProcessGANModel instance
-            learning_rate: Learning rate for Adam optimizer
-            feature_matching: Use feature matching loss
-            gradient_penalty_weight: Weight for gradient penalty (default: 10.0)
-            lambda_adv: Weight for adversarial loss in generator (default: 0.6)
-            lambda_reward: Weight for reward loss in generator (default: 0.4)
+            model: ProcessGAN instance
+            dataset: ProcessDataset instance (needed for matrix→trace decoding)
+            learning_rate: Learning rate for AdamW optimizers
+            gradient_penalty_weight: Weight for gradient penalty (WGAN-GP)
+            lambda_adv: Weight for adversarial loss in generator
+            lambda_reward: Weight for reward loss in generator
+            
+        Note:
+            Uses AdamW optimizer with decoupled weight decay for better generalization.
+            Weight decay values:
+            - Generator: 0.01 (higher to prevent mode collapse)
+            - Discriminator: 0.005 (moderate)
+            - Value Network: 0.001 (lower for RL)
         """
         self.model = model
-        self.learning_rate = learning_rate
-        self.feature_matching = feature_matching
+        self.dataset = dataset
         self.gradient_penalty_weight = gradient_penalty_weight
         self.lambda_adv = lambda_adv
         self.lambda_reward = lambda_reward
 
-        # Lambda placeholder for mixing GAN and RL losses
-        self.la = tf.placeholder_with_default(1., shape=())
+        # Cache for real trace rewards (real traces don't change during training)
+        self.real_rewards_cache = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
 
-        # Build loss functions
-        self._build_losses()
+        # Create optimizers using AdamW (better generalization for small datasets)
+        # Generator: higher weight decay to prevent mode collapse
+        self.optimizer_G = tf.keras.optimizers.AdamW(
+            learning_rate=learning_rate,
+            weight_decay=0.01,  # 1% weight decay
+            beta_1=0.5,
+            beta_2=0.9
+        )
+        # Discriminator: moderate weight decay
+        self.optimizer_D = tf.keras.optimizers.AdamW(
+            learning_rate=learning_rate,
+            weight_decay=0.005,  # 0.5% weight decay
+            beta_1=0.5,
+            beta_2=0.9
+        )
+        # Value Network: lower weight decay for RL reward prediction
+        self.optimizer_V = tf.keras.optimizers.AdamW(
+            learning_rate=learning_rate,
+            weight_decay=0.001,  # 0.1% weight decay
+            beta_1=0.5,
+            beta_2=0.9
+        )
 
-        # Build training ops
-        self._build_training_ops()
+        # Metrics for monitoring
+        self.metrics = {
+            'loss_D': tf.keras.metrics.Mean(),
+            'loss_G': tf.keras.metrics.Mean(),
+            'loss_V': tf.keras.metrics.Mean(),
+            'loss_RL': tf.keras.metrics.Mean(),
+            'grad_penalty': tf.keras.metrics.Mean(),
+            'reward_mean': tf.keras.metrics.Mean(),
+        }
 
-    def _build_losses(self):
-        """Build all loss functions"""
-        with tf.name_scope('losses'):
-            # ─────────────────────────────────────────────────────────
-            # GRADIENT PENALTY (for WGAN-GP stability)
-            # ─────────────────────────────────────────────────────────
+    @tf.function
+    def train_discriminator_step(self, real_adj, real_nodes, z, training=True):
+        """
+        Train discriminator for one step
 
-            # Random interpolation
-            eps = tf.random_uniform(tf.shape(self.model.logits_real)[:1], dtype=self.model.logits_real.dtype)
+        Args:
+            real_adj: Real adjacency matrices (batch, max_act, max_act)
+            real_nodes: Real node vectors (batch, max_act)
+            z: Latent vectors (batch, z_dim)
+            training: Training mode
 
-            # Interpolate adjacency
-            x_int0 = self.model.adjacency_tensor * tf.expand_dims(tf.expand_dims(tf.expand_dims(eps, -1), -1), -1) + \
-                     self.model.edges_softmax * (1 - tf.expand_dims(tf.expand_dims(tf.expand_dims(eps, -1), -1), -1))
+        Returns:
+            loss_D: Discriminator loss
+            grad_penalty: Gradient penalty
+        """
+        with tf.GradientTape() as tape:
+            # Convert labels to one-hot
+            real_adj_onehot = tf.one_hot(
+                real_adj, depth=self.model.flow_types, dtype=tf.float32)
+            real_nodes_onehot = tf.one_hot(
+                real_nodes, depth=self.model.activity_types, dtype=tf.float32)
 
-            # Interpolate nodes
-            x_int1 = self.model.node_tensor * tf.expand_dims(tf.expand_dims(eps, -1), -1) + \
-                     self.model.nodes_softmax * (1 - tf.expand_dims(tf.expand_dims(eps, -1), -1))
+            # Generate fake samples
+            fake_adj, fake_nodes = self.model.generator(z, training=training)
 
-            # Compute gradients
-            grad0, grad1 = tf.gradients(
-                self.model.discriminator((x_int0, None, x_int1), self.model.discriminator_units)[0],
-                (x_int0, x_int1)
-            )
-
-            # Gradient penalty
-            self.grad_penalty = tf.reduce_mean(((1 - tf.norm(grad0, axis=-1)) ** 2), (-2, -1)) + \
-                               tf.reduce_mean(((1 - tf.norm(grad1, axis=-1)) ** 2), -1, keep_dims=True)
-
-            # ─────────────────────────────────────────────────────────
-            # DISCRIMINATOR LOSS
-            # ─────────────────────────────────────────────────────────
+            # Discriminator scores
+            D_real, _ = self.model.discriminator(
+                real_adj_onehot, real_nodes_onehot, training=training)
+            D_fake, _ = self.model.discriminator(
+                fake_adj, fake_nodes, training=training)
 
             # Wasserstein loss
-            self.loss_D = -self.model.logits_real + self.model.logits_fake
+            loss_D = tf.reduce_mean(D_fake) - tf.reduce_mean(D_real)
 
-            # ─────────────────────────────────────────────────────────
-            # GENERATOR LOSS
-            # ─────────────────────────────────────────────────────────
+            # Gradient penalty
+            grad_penalty = self._gradient_penalty(real_adj_onehot, real_nodes_onehot,
+                                                  fake_adj, fake_nodes, training)
 
-            # Adversarial loss
-            self.loss_G = -self.model.logits_fake
+            # Total discriminator loss
+            total_loss_D = loss_D + self.gradient_penalty_weight * grad_penalty
 
-            # Feature matching loss
-            self.loss_F = (tf.reduce_mean(self.model.features_real, 0) -
-                          tf.reduce_mean(self.model.features_fake, 0)) ** 2
+        # Compute gradients and update
+        gradients = tape.gradient(
+            total_loss_D, self.model.discriminator.trainable_variables)
+        self.optimizer_D.apply_gradients(
+            zip(gradients, self.model.discriminator.trainable_variables))
 
-            # ─────────────────────────────────────────────────────────
-            # VALUE NETWORK LOSS (for RL)
-            # ─────────────────────────────────────────────────────────
+        return loss_D, grad_penalty
 
-            self.loss_V = (self.model.value_logits_real - self.model.rewardR) ** 2 + \
-                         (self.model.value_logits_fake - self.model.rewardF) ** 2
-
-            # ─────────────────────────────────────────────────────────
-            # RL LOSS (maximize reward)
-            # ─────────────────────────────────────────────────────────
-
-            self.loss_RL = -self.model.value_logits_fake
-
-        # Aggregate losses
-        self.loss_D = tf.reduce_mean(self.loss_D)
-        self.loss_G = tf.reduce_sum(self.loss_F) if self.feature_matching else tf.reduce_mean(self.loss_G)
-        self.loss_V = tf.reduce_mean(self.loss_V)
-        self.loss_RL = tf.reduce_mean(self.loss_RL)
-        self.grad_penalty = tf.reduce_mean(self.grad_penalty)
-
-        # Compute alpha for balancing G and RL losses
-        self.alpha = tf.abs(tf.stop_gradient(self.loss_G / (self.loss_RL + 1e-8)))
-
-    def _build_training_ops(self):
-        """Build training operations"""
-        with tf.name_scope('train_step'):
-            # ─────────────────────────────────────────────────────────
-            # DISCRIMINATOR TRAINING
-            # ─────────────────────────────────────────────────────────
-
-            self.train_step_D = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(
-                loss=self.loss_D + self.gradient_penalty_weight * self.grad_penalty,
-                var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='discriminator')
-            )
-
-            # ─────────────────────────────────────────────────────────
-            # GENERATOR TRAINING (with RL)
-            # ─────────────────────────────────────────────────────────
-
-            # Conditional loss based on lambda
-            loss_G_combined = tf.cond(
-                tf.greater(self.la, 0),
-                lambda: self.la * self.loss_G,
-                lambda: 0.
-            ) + tf.cond(
-                tf.less(self.la, 1),
-                lambda: (1 - self.la) * self.alpha * self.loss_RL,
-                lambda: 0.
-            )
-
-            self.train_step_G = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(
-                loss=loss_G_combined,
-                var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='generator')
-            )
-
-            # ─────────────────────────────────────────────────────────
-            # VALUE NETWORK TRAINING
-            # ─────────────────────────────────────────────────────────
-
-            self.train_step_V = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(
-                loss=self.loss_V,
-                var_list=tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope='value')
-            )
-
-    def get_loss_dict(self):
+    # Removed @tf.function to allow dynamic control flow based on lambda_mix
+    def train_generator_step(self, real_adj, real_nodes, z, rewards_real, rewards_fake,
+                             lambda_mix=1.0, training=True):
         """
-        Get dictionary of loss tensors for monitoring
+        Train generator for one step
+
+        Args:
+            real_adj: Real adjacency matrices
+            real_nodes: Real node vectors
+            z: Latent vectors
+            rewards_real: Rewards for real traces (batch, 1)
+            rewards_fake: Rewards for fake traces (batch, 1)
+            lambda_mix: Mixing parameter (1.0=pure GAN, 0.0=pure RL)
+            training: Training mode
 
         Returns:
-            Dict with loss tensors
+            loss_G: Generator loss
+            loss_RL: RL loss
         """
-        return {
-            'loss_D': self.loss_D,
-            'loss_G': self.loss_G,
-            'loss_V': self.loss_V,
-            'loss_RL': self.loss_RL,
-            'loss_F': self.loss_F,
-            'grad_penalty': self.grad_penalty,
-            'alpha': self.alpha,
-            'la': self.la
-        }
+        with tf.GradientTape() as tape:
+            # Convert labels to one-hot
+            real_adj_onehot = tf.one_hot(
+                real_adj, depth=self.model.flow_types, dtype=tf.float32)
+            real_nodes_onehot = tf.one_hot(
+                real_nodes, depth=self.model.activity_types, dtype=tf.float32)
 
-    def get_training_ops(self):
+            # Generate fake samples
+            fake_adj, fake_nodes = self.model.generator(z, training=training)
+
+            # Discriminator scores and features
+            D_fake, features_fake = self.model.discriminator(
+                fake_adj, fake_nodes, training=training)
+            _, features_real = self.model.discriminator(
+                real_adj_onehot, real_nodes_onehot, training=training)
+
+            # Adversarial loss (feature matching)
+            loss_F = tf.reduce_mean((tf.reduce_mean(features_real, axis=0) -
+                                    tf.reduce_mean(features_fake, axis=0)) ** 2)
+
+            # RL loss (only if lambda_mix < 1.0)
+            if lambda_mix < 1.0:
+                # Value network predictions
+                V_fake = self.model.value_network(
+                    fake_adj, fake_nodes, training=training)
+                # RL loss (maximize predicted reward)
+                loss_RL = -tf.reduce_mean(V_fake)
+            else:
+                # Pure GAN mode - no RL loss
+                loss_RL = tf.constant(0.0)
+
+            # Combined generator loss
+            loss_G_adv = loss_F  # Feature matching
+            loss_G_total = lambda_mix * loss_G_adv + \
+                (1 - lambda_mix) * tf.abs(loss_G_adv / (loss_RL + 1e-8)) * loss_RL
+
+        # Compute gradients and update
+        gradients = tape.gradient(
+            loss_G_total, self.model.generator.trainable_variables)
+        self.optimizer_G.apply_gradients(
+            zip(gradients, self.model.generator.trainable_variables))
+
+        return loss_G_adv, loss_RL
+
+    @tf.function
+    def train_value_network_step(self, real_adj, real_nodes, z, rewards_real, rewards_fake, training=True):
         """
-        Get training operations
+        Train value network for one step
+
+        Args:
+            real_adj: Real adjacency matrices
+            real_nodes: Real node vectors
+            z: Latent vectors
+            rewards_real: Rewards for real traces (batch, 1)
+            rewards_fake: Rewards for fake traces (batch, 1)
+            training: Training mode
 
         Returns:
-            Dict with training ops
+            loss_V: Value network loss
         """
+        with tf.GradientTape() as tape:
+            # Convert labels to one-hot
+            real_adj_onehot = tf.one_hot(
+                real_adj, depth=self.model.flow_types, dtype=tf.float32)
+            real_nodes_onehot = tf.one_hot(
+                real_nodes, depth=self.model.activity_types, dtype=tf.float32)
+
+            # Generate fake samples
+            fake_adj, fake_nodes = self.model.generator(z, training=training)
+
+            # Value predictions
+            V_real = self.model.value_network(
+                real_adj_onehot, real_nodes_onehot, training=training)
+            V_fake = self.model.value_network(
+                fake_adj, fake_nodes, training=training)
+
+            # MSE loss
+            loss_V_real = tf.reduce_mean((V_real - rewards_real) ** 2)
+            loss_V_fake = tf.reduce_mean((V_fake - rewards_fake) ** 2)
+            loss_V = loss_V_real + loss_V_fake
+
+        # Compute gradients and update
+        gradients = tape.gradient(
+            loss_V, self.model.value_network.trainable_variables)
+        self.optimizer_V.apply_gradients(
+            zip(gradients, self.model.value_network.trainable_variables))
+
+        return loss_V
+
+    def _gradient_penalty(self, real_adj, real_nodes, fake_adj, fake_nodes, training):
+        """
+        Compute gradient penalty for WGAN-GP
+
+        Args:
+            real_adj: Real adjacency (one-hot)
+            real_nodes: Real nodes (one-hot)
+            fake_adj: Fake adjacency (soft)
+            fake_nodes: Fake nodes (soft)
+            training: Training mode
+
+        Returns:
+            Gradient penalty
+        """
+        batch_size = tf.shape(real_adj)[0]
+
+        # Random interpolation
+        alpha = tf.random.uniform([batch_size, 1, 1, 1], 0.0, 1.0)
+        interpolated_adj = alpha * real_adj + (1 - alpha) * fake_adj
+
+        alpha = tf.random.uniform([batch_size, 1, 1], 0.0, 1.0)
+        interpolated_nodes = alpha * real_nodes + (1 - alpha) * fake_nodes
+
+        with tf.GradientTape() as gp_tape:
+            gp_tape.watch([interpolated_adj, interpolated_nodes])
+            D_interpolated, _ = self.model.discriminator(
+                interpolated_adj, interpolated_nodes, training=training)
+
+        # Compute gradients
+        gradients = gp_tape.gradient(
+            D_interpolated, [interpolated_adj, interpolated_nodes])
+
+        # Gradient norm
+        grad_norm = tf.sqrt(
+            tf.reduce_sum(gradients[0] ** 2, axis=[1, 2, 3]) +
+            tf.reduce_sum(gradients[1] ** 2, axis=[1, 2])
+        )
+
+        # Penalty
+        gradient_penalty = tf.reduce_mean((grad_norm - 1.0) ** 2)
+
+        return gradient_penalty
+
+    def train_step(self, real_adj, real_nodes, batch_size, n_critic,
+                   reward_function, lambda_mix=1.0, temperature=1.0):
+        """
+        Complete training step (discriminator + generator + value network)
+
+        Args:
+            real_adj: Real adjacency matrices (batch, max_act, max_act)
+            real_nodes: Real node vectors (batch, max_act)
+            batch_size: Batch size
+            n_critic: Number of discriminator updates per generator update
+            reward_function: ProcessRewardFunction instance
+            lambda_mix: GAN/RL mixing parameter
+            temperature: Gumbel-Softmax temperature
+
+        Returns:
+            Dict with loss values
+        """
+        # Sample latent vectors
+        z = self.model.sample_z(batch_size)
+
+        # Train discriminator (n_critic steps)
+        for _ in range(n_critic):
+            loss_D, grad_penalty = self.train_discriminator_step(
+                real_adj, real_nodes, z, training=True
+            )
+
+        # Compute rewards (for RL)
+        rl_enabled = lambda_mix < 1.0 and reward_function is not None and self.dataset is not None
+        
+        # Log RL status once
+        if not hasattr(self, '_rl_status_logged'):
+            if rl_enabled:
+                print(f"✓ RL Training enabled (lambda_mix={lambda_mix:.2f})")
+            else:
+                print(f"⚠ RL disabled: lambda_mix={lambda_mix}, reward_fn={reward_function is not None}, dataset={self.dataset is not None}")
+            self._rl_status_logged = True
+        
+        if rl_enabled:
+            # Generate traces for reward computation
+            fake_adj, fake_nodes = self.model.generator(
+                z, training=False, temperature=temperature)
+
+            # Convert to traces using matrices_to_traces
+            from models.process_gan import matrices_to_traces
+            
+            # Convert to numpy and get discrete indices
+            fake_adj_np = fake_adj.numpy()
+            fake_nodes_np = fake_nodes.numpy()
+            
+            # Argmax to get hard assignments (batch, max_activities, max_activities)
+            fake_edges_indices = np.argmax(fake_adj_np, axis=-1)
+            
+            # Convert matrices to traces using dataset
+            fake_traces = matrices_to_traces(
+                fake_edges_indices, fake_nodes_np, self.dataset
+            )
+            
+            # Compute rewards using actual reward function
+            rewards_fake_np = reward_function.compute_reward(fake_traces)
+            rewards_fake = tf.constant(rewards_fake_np, dtype=tf.float32)
+            
+            # For real traces, we need to decode from real_adj and real_nodes
+            # real_adj and real_nodes are already numpy arrays from data.next_train_batch
+            
+            # Create cache key from real_adj (unique identifier for this batch)
+            cache_key = tuple(map(lambda x: tuple(x.flatten()), real_adj))
+            
+            # Check cache for real rewards (real traces don't change during training)
+            if cache_key in self.real_rewards_cache:
+                rewards_real_np = self.real_rewards_cache[cache_key]
+                self.cache_hits += 1
+            else:
+                # Cache miss - compute rewards and store
+                real_nodes_onehot = np.eye(self.dataset.activity_num_types)[real_nodes]
+                real_traces = matrices_to_traces(
+                    real_adj, real_nodes_onehot, self.dataset
+                )
+                rewards_real_np = reward_function.compute_reward(real_traces)
+                self.real_rewards_cache[cache_key] = rewards_real_np
+                self.cache_misses += 1
+            
+            rewards_real = tf.constant(rewards_real_np, dtype=tf.float32)
+
+            # Train generator with RL
+            loss_G, loss_RL = self.train_generator_step(
+                real_adj, real_nodes, z, rewards_real, rewards_fake, lambda_mix, training=True
+            )
+
+            # Train value network
+            loss_V = self.train_value_network_step(
+                real_adj, real_nodes, z, rewards_real, rewards_fake, training=True
+            )
+
+            # Update metrics
+            self.metrics['reward_mean'].update_state(
+                tf.reduce_mean(rewards_fake))
+        else:
+            # Pure GAN training (no RL)
+            rewards_real = tf.zeros((batch_size, 1))
+            rewards_fake = tf.zeros((batch_size, 1))
+
+            loss_G, loss_RL = self.train_generator_step(
+                real_adj, real_nodes, z, rewards_real, rewards_fake, lambda_mix, training=True
+            )
+            loss_V = tf.constant(0.0)
+
+        # Update metrics
+        self.metrics['loss_D'].update_state(loss_D)
+        self.metrics['loss_G'].update_state(loss_G)
+        self.metrics['loss_V'].update_state(loss_V)
+        self.metrics['loss_RL'].update_state(loss_RL)
+        self.metrics['grad_penalty'].update_state(grad_penalty)
+
+        # Return current values
         return {
-            'train_D': self.train_step_D,
-            'train_G': self.train_step_G,
-            'train_V': self.train_step_V
+            'loss_D': loss_D.numpy(),
+            'loss_G': loss_G.numpy(),
+            'loss_V': loss_V.numpy(),
+            'loss_RL': loss_RL.numpy(),
+            'grad_penalty': grad_penalty.numpy(),
+            'reward_mean': self.metrics['reward_mean'].result().numpy()
         }
 
+    def reset_metrics(self):
+        """Reset all metrics"""
+        for metric in self.metrics.values():
+            metric.reset_states()
 
-# ─────────────────────────────────────────────────────────
-# TRAINING HELPER FUNCTIONS
-# ─────────────────────────────────────────────────────────
-
-def compute_reward_batch(traces, reward_function):
-    """
-    Compute rewards for batch of traces
-
-    Args:
-        traces: List of traces
-        reward_function: ProcessRewardFunction instance
-
-    Returns:
-        Rewards array (batch, 1)
-    """
-    return reward_function.compute_reward(traces)
-
-
-def training_step(session, model, optimizer, data, batch_size, n_critic, la,
-                 reward_function, epoch, use_rl=True):
-    """
-    Perform one training step
-
-    Args:
-        session: TensorFlow session
-        model: ProcessGANModel instance
-        optimizer: ProcessGANOptimizer instance
-        data: ProcessDataset instance
-        batch_size: Batch size
-        n_critic: Number of discriminator updates per generator update
-        la: Lambda for mixing GAN/RL losses
-        reward_function: ProcessRewardFunction instance
-        epoch: Current epoch number
-        use_rl: Use reinforcement learning
-
-    Returns:
-        Dict with loss values
-    """
-    # Get real traces from dataset
-    traces_real, adj_real, nodes_real, features_real = data.next_train_batch(batch_size)
-
-    # Sample latent vectors
-    embeddings = model.sample_z(batch_size)
-
-    # ─────────────────────────────────────────────────────────
-    # TRAIN DISCRIMINATOR (n_critic steps)
-    # ─────────────────────────────────────────────────────────
-
-    for _ in range(n_critic):
-        _ = session.run(
-            optimizer.train_step_D,
-            feed_dict={
-                model.edges_labels: adj_real,
-                model.nodes_labels: nodes_real,
-                model.embeddings: embeddings,
-                model.training: True,
-                model.dropout_rate: 0.0
-            }
-        )
-
-    # ─────────────────────────────────────────────────────────
-    # TRAIN GENERATOR (with optional RL)
-    # ─────────────────────────────────────────────────────────
-
-    # Compute rewards if using RL
-    if use_rl and la < 1.0:
-        # Generate fake traces
-        n, e = session.run(
-            [model.nodes_gumbel_argmax, model.edges_gumbel_argmax],
-            feed_dict={model.training: False, model.embeddings: embeddings}
-        )
-        n, e = np.argmax(n, axis=-1), np.argmax(e, axis=-1)
-
-        # Convert to traces
-        from models.process_gan import matrices_to_traces
-        traces_fake = matrices_to_traces(e, n, data)
-
-        # Compute rewards
-        rewardR = compute_reward_batch(traces_real, reward_function)
-        rewardF = compute_reward_batch(traces_fake, reward_function)
-
-        # Train generator with RL
-        ops_to_run = [optimizer.train_step_G, optimizer.train_step_V]
-        feed_dict = {
-            model.edges_labels: adj_real,
-            model.nodes_labels: nodes_real,
-            model.embeddings: embeddings,
-            model.rewardR: rewardR,
-            model.rewardF: rewardF,
-            model.training: True,
-            model.dropout_rate: 0.0,
-            optimizer.la: la if epoch > 0 else 1.0
-        }
-    else:
-        # Train generator without RL (pure GAN)
-        ops_to_run = [optimizer.train_step_G]
-        feed_dict = {
-            model.edges_labels: adj_real,
-            model.nodes_labels: nodes_real,
-            model.embeddings: embeddings,
-            model.training: True,
-            model.dropout_rate: 0.0,
-            optimizer.la: 1.0
-        }
-
-    _ = session.run(ops_to_run, feed_dict=feed_dict)
-
-    # ─────────────────────────────────────────────────────────
-    # COMPUTE LOSSES FOR MONITORING
-    # ─────────────────────────────────────────────────────────
-
-    loss_dict = optimizer.get_loss_dict()
-    losses = session.run(loss_dict, feed_dict=feed_dict)
-
-    return losses
+    def get_metrics(self):
+        """Get current metric values"""
+        return {name: metric.result().numpy() for name, metric in self.metrics.items()}
+    
+    
+    def clear_cache(self):
+        """Clear reward cache (useful between epochs or datasets)"""
+        self.real_rewards_cache.clear()
+        self.cache_hits = 0
+        self.cache_misses = 0
 
 
 if __name__ == '__main__':
-    # Example usage
-    import numpy as np
-    from models.process_gan import ProcessGANModel
+    # Test ProcessGAN Trainer TF2
+    print("=" * 70)
+    print("ProcessGAN Trainer Test")
+    print("=" * 70)
 
-    print("=" * 60)
-    print("ProcessGANOptimizer Test")
-    print("=" * 60)
+    from models.process_gan import ProcessGAN
 
-    # Model configuration
+    # Configuration
     config = {
         'max_activities': 10,
         'flow_types': 5,
         'activity_types': 8,
         'embedding_dim': 16,
         'decoder_units': (128, 256, 512),
-        'discriminator_units': ((128, 64), 128, (128, 64)),
+        'discriminator_units': (128, 64),
+        'mlp_units': 128,
     }
 
-    print("\nCreating model and optimizer...")
-
-    # Create model
-    model = ProcessGANModel(
-        max_activities=config['max_activities'],
-        flow_types=config['flow_types'],
-        activity_types=config['activity_types'],
-        embedding_dim=config['embedding_dim'],
-        decoder_units=config['decoder_units'],
-        discriminator_units=config['discriminator_units']
-    )
-
-    # Create optimizer
-    optimizer = ProcessGANOptimizer(
-        model,
-        learning_rate=1e-4,
-        feature_matching=True,
-        gradient_penalty_weight=10.0
-    )
+    print("\nCreating model and trainer...")
+    model = ProcessGAN(**config)
+    trainer = ProcessGANTrainer(model, learning_rate=1e-4)
 
     print("✓ Model created")
-    print("✓ Optimizer created")
+    print("✓ Trainer created")
 
-    # Test with TensorFlow session
-    print("\nTesting optimizer operations...")
-    with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
+    # Dummy data
+    print("\nTesting training step...")
+    batch_size = 4
+    real_adj = np.zeros(
+        (batch_size, config['max_activities'], config['max_activities']), dtype=np.int32)
+    real_nodes = np.zeros(
+        (batch_size, config['max_activities']), dtype=np.int32)
 
-        # Dummy data
-        batch_size = 4
-        adj = np.zeros((batch_size, config['max_activities'], config['max_activities']), dtype=np.int64)
-        nodes = np.zeros((batch_size, config['max_activities']), dtype=np.int64)
-        z = model.sample_z(batch_size)
-        rewards = np.ones((batch_size, 1), dtype=np.float32) * 0.8
+    # Training step
+    losses = trainer.train_step(
+        real_adj=real_adj,
+        real_nodes=real_nodes,
+        batch_size=batch_size,
+        n_critic=5,
+        reward_function=None,
+        lambda_mix=1.0,
+        temperature=1.0
+    )
 
-        # Feed dict
-        feed_dict = {
-            model.edges_labels: adj,
-            model.nodes_labels: nodes,
-            model.embeddings: z,
-            model.rewardR: rewards,
-            model.rewardF: rewards,
-            model.training: True,
-            optimizer.la: 1.0
-        }
+    print("\nLoss values:")
+    for key, value in losses.items():
+        print(f"  {key}: {value:.4f}")
 
-        # Run training ops
-        print("  Running discriminator update...")
-        sess.run(optimizer.train_step_D, feed_dict=feed_dict)
-        print("  ✓ Discriminator updated")
+    print("\n✓ Training step successful")
 
-        print("  Running generator update...")
-        sess.run(optimizer.train_step_G, feed_dict=feed_dict)
-        print("  ✓ Generator updated")
-
-        print("  Running value network update...")
-        sess.run(optimizer.train_step_V, feed_dict=feed_dict)
-        print("  ✓ Value network updated")
-
-        # Get losses
-        print("\n  Computing losses...")
-        loss_dict = optimizer.get_loss_dict()
-        losses = sess.run(loss_dict, feed_dict=feed_dict)
-
-        print("  Loss values:")
-        for key, value in losses.items():
-            if isinstance(value, np.ndarray):
-                value = value.mean()
-            print(f"    {key}: {value:.4f}")
-
-    print("\n" + "=" * 60)
-    print("ProcessGANOptimizer test completed successfully!")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("ProcessGAN Trainer TF2 test completed successfully!")
+    print("=" * 70)

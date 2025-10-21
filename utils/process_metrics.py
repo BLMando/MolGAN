@@ -53,6 +53,35 @@ class ProcessRewardFunction:
             for key in self.weights:
                 self.weights[key] /= weight_sum
 
+    @staticmethod
+    def load_petri_net_model(pnml_path: str):
+        """
+        Load Petri net model from PNML file for fitness/conformance checking
+
+        Args:
+            pnml_path: Path to PNML file
+
+        Returns:
+            Tuple (net, initial_marking, final_marking) for pm4py
+            Or None if loading fails
+        """
+        try:
+            import pm4py
+
+            # Load Petri net from PNML
+            net, initial_marking, final_marking = pm4py.read_pnml(pnml_path)
+
+            print(f"✓ Petri net model loaded from {pnml_path}")
+            print(f"  Places: {len(net.places)}")
+            print(f"  Transitions: {len(net.transitions)}")
+
+            return (net, initial_marking, final_marking)
+
+        except Exception as e:
+            print(
+                f"Warning: Could not load Petri net from {pnml_path}: {str(e)}")
+            return None
+
     def compute_reward(self, traces: List[List[str]]) -> np.ndarray:
         """
         Compute reward for batch of traces
@@ -195,7 +224,8 @@ class ProcessRewardFunction:
 
             # If using reference model, compute proper token replay
             if self.reference_model is not None:
-                fitness = self._token_replay_fitness(trace, self.reference_model)
+                fitness = self._token_replay_fitness(
+                    trace, self.reference_model)
 
             scores.append(fitness)
 
@@ -203,18 +233,56 @@ class ProcessRewardFunction:
 
     def _token_replay_fitness(self, trace: List[str], model) -> float:
         """
-        Proper token replay fitness (placeholder for Petri net implementation)
+        Proper token replay fitness using PM4Py
 
         Args:
-            trace: Single trace
-            model: Reference model (Petri net)
+            trace: Single trace (list of activity names)
+            model: Reference model (Petri net from pm4py)
 
         Returns:
             Fitness score ∈ [0,1]
         """
-        # Placeholder: In full implementation, use PM4Py token replay
-        # For now, return simplified fitness
-        return 0.8
+        try:
+            from pm4py.algo.evaluation.replay_fitness import algorithm as replay_fitness
+            from pm4py.objects.log.obj import EventLog, Trace, Event
+
+            # Convert trace to PM4Py format
+            pm4py_trace = Trace()
+            for activity in trace:
+                event = Event()
+                event['concept:name'] = activity
+                pm4py_trace.append(event)
+
+            # Create single-trace event log
+            event_log = EventLog()
+            event_log.append(pm4py_trace)
+
+            # Compute token replay fitness
+            # model should be tuple (net, initial_marking, final_marking)
+            if isinstance(model, tuple) and len(model) == 3:
+                net, im, fm = model
+                fitness_result = replay_fitness.apply(
+                    event_log, net, im, fm,
+                    variant=replay_fitness.Variants.TOKEN_BASED
+                )
+
+                # Extract average fitness (0 = no fit, 1 = perfect fit)
+                fitness = fitness_result['average_trace_fitness']
+                return float(fitness)
+            else:
+                # If model format is wrong, fallback to simplified
+                return 0.8
+
+        except Exception as e:
+            # If pm4py not available or error, use simplified fitness
+            print(
+                f"Warning: Token replay failed ({str(e)}), using simplified fitness")
+
+            # Simplified fitness based on expected activities
+            expected = {'Start', 'End', 'Submit', 'Review', 'Approve'}
+            trace_set = set(trace)
+            overlap = len(expected.intersection(trace_set))
+            return overlap / len(expected)
 
     # ─────────────────────────────────────────────────────────
     # SUB-REWARD 3: CONFORMANCE [0,1]
@@ -244,7 +312,8 @@ class ProcessRewardFunction:
                 continue
 
             # Simplified alignment: Longest Common Subsequence (LCS)
-            lcs_length = self._longest_common_subsequence(trace, expected_pattern)
+            lcs_length = self._longest_common_subsequence(
+                trace, expected_pattern)
 
             # Conformance based on LCS ratio
             max_len = max(len(trace), len(expected_pattern))
@@ -252,7 +321,8 @@ class ProcessRewardFunction:
 
             # If using reference model, compute proper alignment
             if self.reference_model is not None:
-                conformance = self._alignment_conformance(trace, self.reference_model)
+                conformance = self._alignment_conformance(
+                    trace, self.reference_model)
 
             scores.append(conformance)
 
@@ -260,17 +330,74 @@ class ProcessRewardFunction:
 
     def _alignment_conformance(self, trace: List[str], model) -> float:
         """
-        Proper alignment-based conformance (placeholder)
+        Proper alignment-based conformance using PM4Py
 
         Args:
-            trace: Single trace
-            model: Reference model
+            trace: Single trace (list of activity names)
+            model: Reference model (Petri net from pm4py)
 
         Returns:
-            Conformance score ∈ [0,1]
+            Conformance score ∈ [0,1] based on alignment cost
         """
-        # Placeholder: In full implementation, use PM4Py alignment
-        return 0.75
+        try:
+            from pm4py.algo.conformance.alignments.petri_net import algorithm as alignments
+            from pm4py.objects.log.obj import EventLog, Trace, Event
+
+            # Convert trace to PM4Py format
+            pm4py_trace = Trace()
+            for activity in trace:
+                event = Event()
+                event['concept:name'] = activity
+                pm4py_trace.append(event)
+
+            # Create single-trace event log
+            event_log = EventLog()
+            event_log.append(pm4py_trace)
+
+            # Compute alignment
+            # model should be tuple (net, initial_marking, final_marking)
+            if isinstance(model, tuple) and len(model) == 3:
+                net, im, fm = model
+
+                # Compute alignments using A* algorithm
+                alignments_result = alignments.apply(
+                    event_log, net, im, fm,
+                    variant=alignments.Variants.VERSION_STATE_EQUATION_A_STAR
+                )
+
+                # Extract alignment for the trace
+                if alignments_result and len(alignments_result) > 0:
+                    alignment = alignments_result[0]
+
+                    # Compute conformance from alignment cost
+                    # cost = 0 means perfect alignment
+                    # Higher cost = more deviations
+                    cost = alignment['cost']
+
+                    # Normalize: conformance = 1 / (1 + normalized_cost)
+                    # Trace length is a reasonable normalization factor
+                    trace_length = len(trace)
+                    normalized_cost = cost / max(trace_length, 1)
+
+                    conformance = 1.0 / (1.0 + normalized_cost)
+                    return float(conformance)
+                else:
+                    return 0.5  # No alignment found
+            else:
+                # If model format is wrong, fallback to LCS
+                return 0.75
+
+        except Exception as e:
+            # If pm4py not available or error, use LCS-based conformance
+            print(
+                f"Warning: Alignment failed ({str(e)}), using LCS-based conformance")
+
+            # Fallback: LCS with expected pattern
+            expected_pattern = ['Start', 'Submit', 'Review', 'Approve', 'End']
+            lcs_length = self._longest_common_subsequence(
+                trace, expected_pattern)
+            max_len = max(len(trace), len(expected_pattern))
+            return lcs_length / max_len if max_len > 0 else 0.0
 
     def _longest_common_subsequence(self, seq1: List[str], seq2: List[str]) -> int:
         """
@@ -328,7 +455,8 @@ class ProcessRewardFunction:
 
             # Sample training traces for efficiency (max 100)
             sample_size = min(100, len(self.training_traces))
-            sample_indices = np.random.choice(len(self.training_traces), sample_size, replace=False)
+            sample_indices = np.random.choice(
+                len(self.training_traces), sample_size, replace=False)
 
             for idx in sample_indices:
                 train_trace = self.training_traces[idx]
@@ -336,7 +464,8 @@ class ProcessRewardFunction:
                 min_distance = min(min_distance, distance)
 
             # Normalize distance
-            max_len = max(len(trace), max(len(self.training_traces[i]) for i in sample_indices))
+            max_len = max(len(trace), max(
+                len(self.training_traces[i]) for i in sample_indices))
             diversity = min_distance / max_len if max_len > 0 else 0.0
 
             # Clip: too much diversity (>0.8) might be unrealistic
@@ -414,7 +543,8 @@ class ProcessRewardFunction:
             'diversity_std': np.std(diversity),
             'reward_mean': np.mean(total_reward),
             'reward_std': np.std(total_reward),
-            'high_quality_rate': np.mean(total_reward >= 0.7),  # % with reward >= 0.7
+            # % with reward >= 0.7
+            'high_quality_rate': np.mean(total_reward >= 0.7),
         }
 
         return metrics
@@ -436,10 +566,13 @@ class ProcessRewardFunction:
         diversity = self.diversity_score([trace])[0]
         reward = self.compute_reward([trace])[0, 0]
 
-        print(f"Validity:     {validity:.3f} (α={self.weights['validity']:.2f})")
+        print(
+            f"Validity:     {validity:.3f} (α={self.weights['validity']:.2f})")
         print(f"Fitness:      {fitness:.3f} (β={self.weights['fitness']:.2f})")
-        print(f"Conformance:  {conformance:.3f} (γ={self.weights['conformance']:.2f})")
-        print(f"Diversity:    {diversity:.3f} (δ={self.weights['diversity']:.2f})")
+        print(
+            f"Conformance:  {conformance:.3f} (γ={self.weights['conformance']:.2f})")
+        print(
+            f"Diversity:    {diversity:.3f} (δ={self.weights['diversity']:.2f})")
         print("-" * 60)
         print(f"Total Reward: {reward:.3f}")
 

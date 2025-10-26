@@ -620,7 +620,7 @@ class ProcessDataset:
 
         return F
 
-    def matrices_to_trace(self, node_vector, adjacency_matrix=None, strict=True):
+    def matrices_to_trace(self, node_vector, adjacency_matrix=None, strict=False):
         """
         Convert node vector (and optionally adjacency) back to trace
 

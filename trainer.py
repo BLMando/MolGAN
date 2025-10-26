@@ -526,7 +526,7 @@ def evaluate_model(model, dataset, reward_function, config, epoch):
     metrics['novel_rate'] = len(novel_traces) / len(traces)
 
     # Sample traces for inspection
-    metrics['sample_traces'] = traces[:5]
+    metrics['sample_traces'] = traces
 
     return metrics
 
@@ -681,8 +681,10 @@ def print_epoch_summary(epoch, epochs, metrics, losses, val_losses, config):
         f"  High Quality: {metrics['high_quality_rate']:.1%} (reward >= 0.7)")
 
     print("\nSample Generated Traces:")
-    for i, trace in enumerate(metrics['sample_traces'][:3]):
-        print(f"  {i+1}. {' → '.join(trace)}")
+    print(len(metrics['sample_traces']), "traces generated, showing all:")
+    for i, trace in enumerate(metrics['sample_traces']):
+        print(f" {len(trace)} {i+1}. {' → '.join(trace)}")
+
 
     print("=" * 80 + "\n")
 

@@ -23,19 +23,45 @@ class ProcessRewardFunction:
     - Diversity: Edit distance from training set
     """
 
-    def __init__(self, reference_model=None, training_traces=None, weights=None):
+    def __init__(self, reference_model=None, training_traces=None, weights=None,
+                 start_activity=None, end_activity=None, core_activities=None):
         """
-        Initialize reward function
+        Initialize reward function (data-driven)
 
         Args:
-            reference_model: Reference process model (Petri net, BPMN) - optional
+            reference_model: Reference process model (Petri net) - optional
             training_traces: List of training traces for diversity calculation
             weights: Dict with keys ['validity', 'fitness', 'conformance', 'diversity']
                     If None, uses default: {0.30, 0.25, 0.25, 0.20}
+            start_activity: Name of START activity (auto-detected if None)
+            end_activity: Name of END activity (auto-detected if None)
+            core_activities: Set of core activities (auto-detected if None)
         """
         self.reference_model = reference_model
         self.training_traces = training_traces if training_traces is not None else []
 
+        # Auto-detect START activity
+        if start_activity is None:
+            self.start_activity = self._detect_start_activity()
+        else:
+            self.start_activity = start_activity
+
+        # Auto-detect END activity
+        if end_activity is None:
+            self.end_activity = self._detect_end_activity()
+        else:
+            self.end_activity = end_activity
+
+        # Auto-detect core activities (frequenza >= 20% delle tracce)
+        if core_activities is None:
+            self.core_activities = self._detect_core_activities()
+        else:
+            self.core_activities = core_activities
+
+        # Auto-detect expected pattern (traccia più comune)
+        self.expected_pattern = self._detect_expected_pattern()
+
+        # Weights setup
         if weights is None:
             self.weights = {
                 'validity': 0.30,
@@ -52,6 +78,112 @@ class ProcessRewardFunction:
             print(f"Warning: Weights sum to {weight_sum}, normalizing...")
             for key in self.weights:
                 self.weights[key] /= weight_sum
+
+    def _detect_start_activity(self) -> str:
+        """
+        Auto-detect START activity (most common first activity)
+
+        Returns:
+            Name of START activity (default: 'Start')
+        """
+        if not self.training_traces:
+            return 'Start'  # Fallback
+
+        # Count first activities
+        first_activities = {}
+        for trace in self.training_traces:
+            if len(trace) > 0:
+                first_act = trace[0]
+                first_activities[first_act] = first_activities.get(first_act, 0) + 1
+
+        if not first_activities:
+            return 'Start'
+
+        # Most common first activity
+        start_activity = max(first_activities, key=first_activities.get)
+        return start_activity
+
+    def _detect_end_activity(self) -> str:
+        """
+        Auto-detect END activity (most common last activity)
+
+        Returns:
+            Name of END activity (default: 'End')
+        """
+        if not self.training_traces:
+            return 'End'  # Fallback
+
+        # Count last activities
+        last_activities = {}
+        for trace in self.training_traces:
+            if len(trace) > 0:
+                last_act = trace[-1]
+                last_activities[last_act] = last_activities.get(last_act, 0) + 1
+
+        if not last_activities:
+            return 'End'
+
+        # Most common last activity
+        end_activity = max(last_activities, key=last_activities.get)
+        return end_activity
+
+    def _detect_core_activities(self, min_frequency=0.20) -> set:
+        """
+        Auto-detect core activities (appear in >= 20% of traces)
+
+        Args:
+            min_frequency: Minimum frequency threshold (default: 0.20 = 20%)
+
+        Returns:
+            Set of core activity names
+        """
+        if not self.training_traces:
+            return set()
+
+        # Count activity occurrences across traces
+        activity_count = {}
+        total_traces = len(self.training_traces)
+
+        for trace in self.training_traces:
+            # Use set to count unique activities per trace (not repetitions)
+            unique_activities = set(trace)
+            for activity in unique_activities:
+                activity_count[activity] = activity_count.get(activity, 0) + 1
+
+        # Filter by frequency threshold
+        core_activities = {
+            activity for activity, count in activity_count.items()
+            if count / total_traces >= min_frequency
+        }
+
+        # Always include START and END
+        core_activities.add(self.start_activity)
+        core_activities.add(self.end_activity)
+
+        return core_activities
+
+    def _detect_expected_pattern(self) -> list:
+        """
+        Auto-detect expected trace pattern (most common trace)
+
+        Returns:
+            List representing most common trace (or median-length trace)
+        """
+        if not self.training_traces:
+            return [self.start_activity, self.end_activity]
+
+        # Find most common trace
+        trace_counts = {}
+        for trace in self.training_traces:
+            trace_tuple = tuple(trace)
+            trace_counts[trace_tuple] = trace_counts.get(trace_tuple, 0) + 1
+
+        if not trace_counts:
+            return [self.start_activity, self.end_activity]
+
+        # Most common trace
+        most_common_trace = max(trace_counts, key=trace_counts.get)
+        return list(most_common_trace)
 
     @staticmethod
     def load_petri_net_model(pnml_path: str):
@@ -118,15 +250,16 @@ class ProcessRewardFunction:
 
     def validity_score(self, traces: List[List[str]]) -> np.ndarray:
         """
-        Syntactic validity score
+        Syntactic validity score (data-driven)
 
         Checks:
         - Trace is not empty
-        - Starts with 'Start'
-        - Ends with 'End'
+        - Starts with START activity (auto-detected)
+        - Ends with END activity (auto-detected)
+        - START appears exactly ONCE, only at position 0
+        - END appears exactly ONCE, only at last position
         - Reasonable length (3-20 activities)
         - No consecutive duplicate activities
-        - 'End' only appears at last position
 
         Args:
             traces: List of traces
@@ -144,13 +277,29 @@ class ProcessRewardFunction:
                 scores.append(0.0)
                 continue
 
-            # Rule 2: Must start with 'Start'
-            if trace[0] != 'Start':
+            # Rule 2: Must start with START activity (HARD CONSTRAINT)
+            if trace[0] != self.start_activity:
+                scores.append(0.0)  # Invalida completamente
+                continue
+
+            # Rule 2b: START must appear ONLY at position 0 (HARD CONSTRAINT)
+            if self.start_activity in trace[1:]:
+                scores.append(0.0)  # Invalida se START appare altrove
+                continue
+
+            # Rule 2c: START must appear EXACTLY ONCE (HARD CONSTRAINT)
+            if trace.count(self.start_activity) != 1:
+                scores.append(0.0)
+                continue
+
+            # Rule 3: Must end with END activity
+            if trace[-1] != self.end_activity:
                 score *= 0.5
 
-            # Rule 3: Must end with 'End'
-            if trace[-1] != 'End':
-                score *= 0.5
+            # Rule 3b: END must appear EXACTLY ONCE (HARD CONSTRAINT)
+            if trace.count(self.end_activity) != 1:
+                scores.append(0.0)
+                continue
 
             # Rule 4: Reasonable length (3-20 activities)
             if not (3 <= len(trace) <= 20):
@@ -162,9 +311,10 @@ class ProcessRewardFunction:
                     score *= 0.8
                     break
 
-            # Rule 6: 'End' only at last position
-            if 'End' in trace[:-1]:
-                score *= 0.3
+            # Rule 6: END only at last position (HARD CONSTRAINT)
+            if self.end_activity in trace[:-1]:
+                scores.append(0.0)  # Invalida completamente
+                continue
 
             scores.append(score)
 
@@ -176,11 +326,12 @@ class ProcessRewardFunction:
 
     def fitness_score(self, traces: List[List[str]]) -> np.ndarray:
         """
-        Token replay fitness (simplified version)
+        Token replay fitness (data-driven)
 
         In full implementation, would use Petri net token replay.
         Simplified version checks:
-        - Presence of expected activities
+        - Presence of expected activities (START/END)
+        - Presence of core activities (auto-detected)
         - Logical ordering
 
         Args:
@@ -191,9 +342,8 @@ class ProcessRewardFunction:
         """
         scores = []
 
-        # Expected activity patterns (simplified)
-        expected_activities = {'Start', 'End'}
-        core_activities = {'Submit', 'Review', 'Approve'}
+        # Expected activities: START + END (data-driven)
+        expected_activities = {self.start_activity, self.end_activity}
 
         for trace in traces:
             if len(trace) == 0:
@@ -202,21 +352,21 @@ class ProcessRewardFunction:
 
             fitness = 1.0
 
-            # Check presence of expected activities
+            # Check presence of START/END
             trace_set = set(trace)
             if not expected_activities.issubset(trace_set):
                 fitness *= 0.5
 
-            # Bonus for core activities
-            core_present = len(trace_set.intersection(core_activities))
-            core_bonus = core_present / len(core_activities)
-            fitness *= (0.5 + 0.5 * core_bonus)
+            # Bonus for core activities (data-driven)
+            if self.core_activities:
+                core_present = len(trace_set.intersection(self.core_activities))
+                core_bonus = core_present / len(self.core_activities)
+                fitness *= (0.5 + 0.5 * core_bonus)
 
-            # Check logical ordering
-            # Start should be before End
+            # Check logical ordering (START before END)
             try:
-                start_idx = trace.index('Start')
-                end_idx = trace.index('End')
+                start_idx = trace.index(self.start_activity)
+                end_idx = trace.index(self.end_activity)
                 if start_idx >= end_idx:
                     fitness *= 0.3
             except ValueError:
@@ -278,11 +428,11 @@ class ProcessRewardFunction:
             print(
                 f"Warning: Token replay failed ({str(e)}), using simplified fitness")
 
-            # Simplified fitness based on expected activities
-            expected = {'Start', 'End', 'Submit', 'Review', 'Approve'}
+            # Simplified fitness based on expected activities (data-driven)
+            expected = self.core_activities if self.core_activities else {self.start_activity, self.end_activity}
             trace_set = set(trace)
             overlap = len(expected.intersection(trace_set))
-            return overlap / len(expected)
+            return overlap / len(expected) if expected else 0.5
 
     # ─────────────────────────────────────────────────────────
     # SUB-REWARD 3: CONFORMANCE [0,1]
@@ -290,10 +440,10 @@ class ProcessRewardFunction:
 
     def conformance_score(self, traces: List[List[str]]) -> np.ndarray:
         """
-        Conformance checking via alignment (simplified)
+        Conformance checking via alignment (data-driven)
 
         In full implementation, would use A* alignment algorithm.
-        Simplified version checks structural similarity.
+        Simplified version checks structural similarity using expected pattern.
 
         Args:
             traces: List of traces
@@ -303,20 +453,17 @@ class ProcessRewardFunction:
         """
         scores = []
 
-        # Expected trace pattern (simplified)
-        expected_pattern = ['Start', 'Submit', 'Review', 'Approve', 'End']
-
         for trace in traces:
             if len(trace) == 0:
                 scores.append(0.0)
                 continue
 
-            # Simplified alignment: Longest Common Subsequence (LCS)
+            # Simplified alignment: LCS with expected pattern (data-driven)
             lcs_length = self._longest_common_subsequence(
-                trace, expected_pattern)
+                trace, self.expected_pattern)
 
             # Conformance based on LCS ratio
-            max_len = max(len(trace), len(expected_pattern))
+            max_len = max(len(trace), len(self.expected_pattern))
             conformance = lcs_length / max_len if max_len > 0 else 0.0
 
             # If using reference model, compute proper alignment
@@ -392,11 +539,10 @@ class ProcessRewardFunction:
             print(
                 f"Warning: Alignment failed ({str(e)}), using LCS-based conformance")
 
-            # Fallback: LCS with expected pattern
-            expected_pattern = ['Start', 'Submit', 'Review', 'Approve', 'End']
+            # Fallback: LCS with expected pattern (data-driven)
             lcs_length = self._longest_common_subsequence(
-                trace, expected_pattern)
-            max_len = max(len(trace), len(expected_pattern))
+                trace, self.expected_pattern)
+            max_len = max(len(trace), len(self.expected_pattern))
             return lcs_length / max_len if max_len > 0 else 0.0
 
     def _longest_common_subsequence(self, seq1: List[str], seq2: List[str]) -> int:
@@ -599,9 +745,28 @@ class ProcessMetrics:
     """
 
     @staticmethod
-    def valid_traces(traces: List[List[str]]) -> List[List[str]]:
-        """Return only valid traces (start with Start, end with End)"""
-        return [t for t in traces if len(t) >= 3 and t[0] == 'Start' and t[-1] == 'End']
+    def valid_traces(traces: List[List[str]], start_activity='Start', end_activity='End') -> List[List[str]]:
+        """
+        Return only valid traces with strict position constraints (data-driven)
+
+        Args:
+            traces: List of traces
+            start_activity: Name of START activity (default: 'Start')
+            end_activity: Name of END activity (default: 'End')
+
+        Returns:
+            List of valid traces
+        """
+        return [
+            t for t in traces
+            if len(t) >= 3
+            and t[0] == start_activity           # Deve iniziare con START
+            and t[-1] == end_activity            # Deve finire con END
+            and t.count(start_activity) == 1     # START esattamente 1 volta
+            and t.count(end_activity) == 1       # END esattamente 1 volta
+            and start_activity not in t[1:]      # START solo in posizione 0
+            and end_activity not in t[:-1]       # END solo in ultima posizione
+        ]
 
     @staticmethod
     def unique_traces(traces: List[List[str]]) -> List[List[str]]:

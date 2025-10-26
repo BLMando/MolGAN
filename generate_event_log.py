@@ -467,10 +467,27 @@ def main():
                     log(f"✓ Found companion Petri net: {candidate}")
                     break
         
+        # Auto-detect START/END activities from dataset
+        start_activity = None
+        end_activity = None
+        if dataset.data:
+            from collections import Counter
+            first_acts = [t[0] for t in dataset.data if len(t) > 0]
+            last_acts = [t[-1] for t in dataset.data if len(t) > 0]
+            if first_acts:
+                start_activity = Counter(first_acts).most_common(1)[0][0]
+            if last_acts:
+                end_activity = Counter(last_acts).most_common(1)[0][0]
+
+        log(f"Auto-detected START activity: {start_activity}")
+        log(f"Auto-detected END activity: {end_activity}")
+
         reward_function = ProcessRewardFunction(
             reference_model=reference_model,
             training_traces=dataset.data,
-            weights={'validity': 0.20, 'fitness': 0.40, 'conformance': 0.25, 'diversity': 0.15}
+            weights={'validity': 0.20, 'fitness': 0.40, 'conformance': 0.25, 'diversity': 0.15},
+            start_activity=start_activity,  # NEW: Pass auto-detected START
+            end_activity=end_activity        # NEW: Pass auto-detected END
         )
     
     # Generate synthetic traces for augmentation

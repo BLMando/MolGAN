@@ -59,10 +59,10 @@ config = {
     # Reward function
     'use_rl': True,
     'reward_weights': {
-        'validity': 0.40,
-        'fitness': 0.30,
-        'conformance': 0.20,
-        'diversity': 0.10
+        'validity': 0.50,      # Aumentato da 0.40 → 0.50 (vincolo START/END)
+        'fitness': 0.25,       # Ridotto da 0.30 → 0.25
+        'conformance': 0.15,   # Ridotto da 0.20 → 0.15
+        'diversity': 0.10      # Invariato
     },
 
     # 'reward_weights': {
@@ -803,10 +803,29 @@ def main():
     else:
         log("⚠ No reference model available - using simplified fitness/conformance metrics")
 
+    # Auto-detect START/END activities from dataset
+    start_activity = None
+    end_activity = None
+
+    if data.data:
+        from collections import Counter
+        first_activities = [t[0] for t in data.data if len(t) > 0]
+        last_activities = [t[-1] for t in data.data if len(t) > 0]
+
+        if first_activities:
+            start_activity = Counter(first_activities).most_common(1)[0][0]
+        if last_activities:
+            end_activity = Counter(last_activities).most_common(1)[0][0]
+
+    log(f"Auto-detected START activity: {start_activity}")
+    log(f"Auto-detected END activity: {end_activity}")
+
     reward_function = ProcessRewardFunction(
         reference_model=reference_model,
         training_traces=data.data,
-        weights=config_merged['reward_weights']
+        weights=config_merged['reward_weights'],
+        start_activity=start_activity,  # NEW: Pass auto-detected START
+        end_activity=end_activity        # NEW: Pass auto-detected END
     )
     log(f"Reward weights: {config_merged['reward_weights']}")
 

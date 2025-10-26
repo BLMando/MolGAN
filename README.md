@@ -32,7 +32,7 @@ ProcessGAN generates **realistic process traces** for:
 - Hybrid XOR/AND split detection
 - Loop and SKIP pattern recognition
 
-✅ **Advanced Reward Function**
+✅ **Reward Function**
 
 - Token replay fitness (PM4Py)
 - Alignment-based conformance (PM4Py A\*)

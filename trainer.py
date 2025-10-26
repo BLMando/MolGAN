@@ -23,7 +23,6 @@ from models.process_gan import ProcessGAN, matrices_to_traces
 from optimizers.process_optimizer import ProcessGANTrainer
 
 
-
 # ═════════════════════════════════════════════════════════════════════════════
 # CONFIGURAZIONE OTTIMIZZATA PER CPU (3804 tracce, no GPU)
 # ═════════════════════════════════════════════════════════════════════════════
@@ -32,7 +31,8 @@ config = {
     # Data
     'data_file': 'data/helpdesk_parsed.xes',
     'max_activities': 10,  # Ottimale per helpdesk (95° percentile)
-    'validation_split': 0.15,  # Aumentato per dataset piccolo (validazione più robusta)
+    # Aumentato per dataset piccolo (validazione più robusta)
+    'validation_split': 0.15,
     'test_split': 0.1,
 
     # Model architecture
@@ -52,25 +52,25 @@ config = {
     'lambda_start': 0.7,  # 0.8→0.7: RL attivo prima (30% da subito)
     'lambda_end': 0.4,    # 0.5→0.4: Più RL alla fine (60%)
     'lambda_decay_start': 3,  # 5→3: Decay prima (meno warm-up)
-    
+
     # Hard constraints
     'enforce_start': True,   # Forza START come prima attività
 
     # Reward function
     'use_rl': True,
-    # 'reward_weights': {
-    #     'validity': 0.40,
-    #     'fitness': 0.30,   
-    #     'conformance': 0.20,
-    #     'diversity': 0.10
-    # },
-    
     'reward_weights': {
-        'validity': 0.20,    # Ridotto da 0.40 (START già garantito)
-        'fitness': 0.40,     # Aumentato (focus su pattern)
-        'conformance': 0.25,
-        'diversity': 0.15    # Aumentato (più esplorazione)
+        'validity': 0.40,
+        'fitness': 0.30,
+        'conformance': 0.20,
+        'diversity': 0.10
     },
+
+    # 'reward_weights': {
+    #    'validity': 0.20,    # Ridotto da 0.40 (START già garantito)
+    #    'fitness': 0.40,     # Aumentato (focus su pattern)
+    #    'conformance': 0.25,
+    #    'diversity': 0.15    # Aumentato (più esplorazione)
+    # },
 
 
     # Generation - RIDOTTO per velocità
@@ -258,14 +258,17 @@ def plot_training_history(history, save_dir):
     plt.style.use('seaborn-v0_8-darkgrid')
 
     # ─────────────────────────────────────────────────────────
-    # 1. Loss Curves
+    # 1. Loss Curves (Training vs Validation)
     # ─────────────────────────────────────────────────────────
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    fig.suptitle('Training Losses', fontsize=16, fontweight='bold')
+    fig.suptitle('Training vs Validation Losses',
+                 fontsize=16, fontweight='bold')
 
     # Discriminator Loss
     axes[0, 0].plot(epochs, history['loss_D'], 'b-',
-                    linewidth=2, label='D Loss')
+                    linewidth=2, label='Training')
+    axes[0, 0].plot(epochs, history['val_loss_D'], 'r--',
+                    linewidth=2, label='Validation')
     axes[0, 0].set_title('Discriminator Loss')
     axes[0, 0].set_xlabel('Epoch')
     axes[0, 0].set_ylabel('Loss')
@@ -273,8 +276,10 @@ def plot_training_history(history, save_dir):
     axes[0, 0].legend()
 
     # Generator Loss
-    axes[0, 1].plot(epochs, history['loss_G'], 'r-',
-                    linewidth=2, label='G Loss')
+    axes[0, 1].plot(epochs, history['loss_G'], 'b-',
+                    linewidth=2, label='Training')
+    axes[0, 1].plot(epochs, history['val_loss_G'], 'r--',
+                    linewidth=2, label='Validation')
     axes[0, 1].set_title('Generator Loss')
     axes[0, 1].set_xlabel('Epoch')
     axes[0, 1].set_ylabel('Loss')
@@ -282,8 +287,10 @@ def plot_training_history(history, save_dir):
     axes[0, 1].legend()
 
     # RL Loss
-    axes[1, 0].plot(epochs, history['loss_RL'], 'g-',
-                    linewidth=2, label='RL Loss')
+    axes[1, 0].plot(epochs, history['loss_RL'], 'b-',
+                    linewidth=2, label='Training')
+    axes[1, 0].plot(epochs, history['val_loss_RL'], 'r--',
+                    linewidth=2, label='Validation')
     axes[1, 0].set_title('Reinforcement Learning Loss')
     axes[1, 0].set_xlabel('Epoch')
     axes[1, 0].set_ylabel('Loss')
@@ -291,8 +298,10 @@ def plot_training_history(history, save_dir):
     axes[1, 0].legend()
 
     # Value Network Loss
-    axes[1, 1].plot(epochs, history['loss_V'], 'm-',
-                    linewidth=2, label='V Loss')
+    axes[1, 1].plot(epochs, history['loss_V'], 'b-',
+                    linewidth=2, label='Training')
+    axes[1, 1].plot(epochs, history['val_loss_V'], 'r--',
+                    linewidth=2, label='Validation')
     axes[1, 1].set_title('Value Network Loss')
     axes[1, 1].set_xlabel('Epoch')
     axes[1, 1].set_ylabel('Loss')
@@ -300,7 +309,7 @@ def plot_training_history(history, save_dir):
     axes[1, 1].legend()
 
     plt.tight_layout()
-    plt.savefig(os.path.join(plots_dir, 'losses.png'),
+    plt.savefig(os.path.join(plots_dir, 'training_validation_losses.png'),
                 dpi=300, bbox_inches='tight')
     plt.close()
 
@@ -467,7 +476,7 @@ def plot_training_history(history, save_dir):
     plt.close()
 
     log(f"📊 Training plots saved in: {plots_dir}")
-    log(f"  - losses.png")
+    log(f"  - training_validation_losses.png")
     log(f"  - rewards.png")
     log(f"  - quality_metrics.png")
     log(f"  - overview.png")
@@ -522,13 +531,119 @@ def evaluate_model(model, dataset, reward_function, config, epoch):
     return metrics
 
 
-def print_epoch_summary(epoch, epochs, metrics, losses, config):
+def evaluate_validation_losses(model, dataset, trainer, reward_function, config, epoch):
+    """Evaluate model losses on validation set"""
+    log('Computing validation losses...')
+
+    # Reset validation counter
+    dataset.validation_counter = 0
+
+    # Compute dynamic parameters
+    lambda_mix = compute_lambda(epoch, config)
+    temperature = compute_temperature(epoch, config)
+
+    # Reset metrics for validation
+    trainer.reset_metrics()
+
+    # Compute validation losses
+    val_steps = dataset.validation_count // config['batch_size']
+    if val_steps == 0:
+        val_steps = 1  # At least one step
+
+    for step in range(val_steps):
+        # Get validation batch
+        _, adj_batch, nodes_batch, _ = dataset.next_validation_batch(
+            config['batch_size'])
+
+        # Convert adjacency matrices to 4D tensors (add flow_types dimension)
+        # Dataset provides: (batch, max_act, max_act) with flow type indices
+        # Discriminator expects: (batch, max_act, max_act, flow_types) as one-hot
+        adj_batch_4d = tf.one_hot(
+            adj_batch, depth=dataset.flow_num_types, dtype=tf.float32)
+
+        # Convert nodes to one-hot if needed
+        if len(nodes_batch.shape) == 2:  # (batch, max_act) with activity indices
+            nodes_batch_onehot = tf.one_hot(
+                nodes_batch, depth=dataset.activity_num_types, dtype=tf.float32)
+        else:  # Already one-hot
+            nodes_batch_onehot = nodes_batch
+
+        # Forward pass without training (no gradients)
+        with tf.GradientTape() as tape:
+            # Generate fake samples
+            z = model.sample_z(config['batch_size'])
+            fake_adj, fake_nodes = model.generator(
+                z, training=False, temperature=temperature)
+
+            # Discriminator forward pass
+            real_scores, real_features = model.discriminator(
+                adj_batch_4d, nodes_batch_onehot, training=False)
+            fake_scores, fake_features = model.discriminator(
+                fake_adj, fake_nodes, training=False)
+
+            # Compute discriminator loss (WGAN)
+            loss_D = tf.reduce_mean(fake_scores) - tf.reduce_mean(real_scores)
+
+            # Compute generator loss
+            loss_G = -tf.reduce_mean(fake_scores)
+
+            # Compute gradient penalty
+            grad_penalty = trainer._gradient_penalty(
+                adj_batch_4d, nodes_batch_onehot, fake_adj, fake_nodes, training=False)
+
+            # Add gradient penalty to discriminator loss
+            loss_D += 10.0 * grad_penalty
+
+            # RL losses (if enabled)
+            if config['use_rl']:
+                # Convert to traces for reward computation
+                fake_nodes_onehot = np.eye(dataset.activity_num_types)[
+                    np.argmax(fake_nodes.numpy(), axis=-1)]
+                fake_traces = matrices_to_traces(
+                    np.argmax(fake_adj.numpy(), axis=-1), fake_nodes_onehot, dataset)
+
+                # Compute rewards
+                rewards_fake = reward_function.compute_reward(fake_traces)
+                rewards_fake = tf.constant(rewards_fake, dtype=tf.float32)
+
+                # Value network prediction
+                value_pred = model.value_network(
+                    fake_adj, fake_nodes, training=False)
+                loss_V = tf.reduce_mean(tf.square(value_pred - rewards_fake))
+
+                # RL loss (policy gradient)
+                # Use tf.math.log for TF2 compatibility
+                loss_RL = -tf.reduce_mean(
+                    rewards_fake *
+                    tf.math.log(tf.reduce_sum(fake_nodes, axis=-1) + 1e-8)
+                )
+            else:
+                loss_V = tf.constant(0.0)
+                loss_RL = tf.constant(0.0)
+                rewards_fake = tf.zeros((config['batch_size'], 1))
+
+        # Update metrics
+        trainer.metrics['loss_D'].update_state(loss_D)
+        trainer.metrics['loss_G'].update_state(loss_G)
+        trainer.metrics['loss_V'].update_state(loss_V)
+        trainer.metrics['loss_RL'].update_state(loss_RL)
+        trainer.metrics['grad_penalty'].update_state(grad_penalty)
+        trainer.metrics['reward_mean'].update_state(
+            tf.reduce_mean(rewards_fake))
+
+    # Get validation metrics
+    val_metrics = trainer.get_metrics()
+
+    return val_metrics
+
+
+def print_epoch_summary(epoch, epochs, metrics, losses, val_losses, config):
     """Print summary of epoch results"""
     print("\n" + "=" * 80)
     print(f"EPOCH {epoch+1}/{epochs}")
     print("=" * 80)
 
-    print("\nLosses:")
+    print("\nTraining Losses:")
     print(f"  D Loss:       {losses['loss_D']:.4f}")
     print(f"  G Loss:       {losses['loss_G']:.4f}")
     if config['use_rl']:
@@ -536,6 +651,15 @@ def print_epoch_summary(epoch, epochs, metrics, losses, config):
         print(f"  V Loss:       {losses['loss_V']:.4f}")
         print(f"  Reward Mean:  {losses['reward_mean']:.4f}")
     print(f"  Grad Penalty: {losses['grad_penalty']:.4f}")
+
+    print("\nValidation Losses:")
+    print(f"  D Loss:       {val_losses['loss_D']:.4f}")
+    print(f"  G Loss:       {val_losses['loss_G']:.4f}")
+    if config['use_rl']:
+        print(f"  RL Loss:      {val_losses['loss_RL']:.4f}")
+        print(f"  V Loss:       {val_losses['loss_V']:.4f}")
+        print(f"  Reward Mean:  {val_losses['reward_mean']:.4f}")
+    print(f"  Grad Penalty: {val_losses['grad_penalty']:.4f}")
 
     print("\nGeneration Metrics:")
     print(
@@ -614,8 +738,8 @@ def main():
             log(f"Unsupported format: {args.input_format}. Use 'xes' or 'pnml'", level='ERROR')
             return
     else:
-       log("Data file not found: {config_merged['data_file']}", level='ERROR')
-       return
+        log("Data file not found: {config_merged['data_file']}", level='ERROR')
+        return
 
     stats = data.get_stats()
     log_stats = data.analyze_trace_length_distribution(
@@ -760,6 +884,12 @@ def main():
         'loss_V': [],
         'grad_penalty': [],
         'reward_mean': [],
+        'val_loss_D': [],
+        'val_loss_G': [],
+        'val_loss_RL': [],
+        'val_loss_V': [],
+        'val_grad_penalty': [],
+        'val_reward_mean': [],
         'eval_reward': [],
         'eval_validity': [],
         'eval_fitness': [],
@@ -799,12 +929,16 @@ def main():
         # Get average losses over all steps
         avg_losses = trainer.get_metrics()
 
+        # Compute validation losses
+        val_losses = evaluate_validation_losses(
+            model, data, trainer, reward_function, config_merged, epoch)
+
         # Evaluation
         if (epoch + 1) % config_merged['log_every'] == 0:
             metrics = evaluate_model(
                 model, data, reward_function, config_merged, epoch)
             print_epoch_summary(
-                epoch, config_merged['epochs'], metrics, avg_losses, config_merged)
+                epoch, config_merged['epochs'], metrics, avg_losses, val_losses, config_merged)
         else:
             # Still compute metrics for best model tracking
             metrics = evaluate_model(
@@ -818,6 +952,12 @@ def main():
         history['loss_V'].append(avg_losses['loss_V'])
         history['grad_penalty'].append(avg_losses['grad_penalty'])
         history['reward_mean'].append(avg_losses['reward_mean'])
+        history['val_loss_D'].append(val_losses['loss_D'])
+        history['val_loss_G'].append(val_losses['loss_G'])
+        history['val_loss_RL'].append(val_losses['loss_RL'])
+        history['val_loss_V'].append(val_losses['loss_V'])
+        history['val_grad_penalty'].append(val_losses['grad_penalty'])
+        history['val_reward_mean'].append(val_losses['reward_mean'])
         history['eval_reward'].append(metrics['reward_mean'])
         history['eval_validity'].append(metrics['validity_mean'])
         history['eval_fitness'].append(metrics['fitness_mean'])

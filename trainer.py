@@ -695,7 +695,7 @@ def main():
     """Main training function"""
 
     log("=" * 80)
-    log("ProcessGAN Training (TensorFlow 2.x)")
+    log("ProcessGAN Training")
     log("=" * 80)
 
     # Check TensorFlow version
@@ -728,23 +728,14 @@ def main():
                 validation=config_merged['validation_split'],
                 test=config_merged['test_split']
             )
-        elif args.input_format == 'pnml':
-            data.load_from_petri_net(
-                config_merged['data_file'],
-                validation=config_merged['validation_split'],
-                test=config_merged['test_split']
-            )
         else:
             log(f"Unsupported format: {args.input_format}. Use 'xes' or 'pnml'", level='ERROR')
             return
     else:
-        log("Data file not found: {config_merged['data_file']}", level='ERROR')
+        log(f"Data file not found: {config_merged['data_file']}", level='ERROR')
         return
 
     stats = data.get_stats()
-    log_stats = data.analyze_trace_length_distribution(
-        config_merged['data_file'])
-    log(log_stats)
     log(f"Dataset loaded: {stats['total_traces']} traces")
     log(f"  Train: {stats['train_size']}, Val: {stats['val_size']}, Test: {stats['test_size']}")
     log(f"  Activities: {stats['num_activities']}, Flow types: {stats['num_flow_types']}")
@@ -951,6 +942,7 @@ def main():
         # Compute validation losses
         val_losses = evaluate_validation_losses(
             model, data, trainer, reward_function, config_merged, epoch)
+
 
         # Evaluation
         if (epoch + 1) % config_merged['log_every'] == 0:

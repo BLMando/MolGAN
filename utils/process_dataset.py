@@ -151,6 +151,123 @@ class ProcessDataset:
             self.log('[Pattern Discovery] PM4Py DFG not available')
         except Exception as e:
             self.log(f'[Pattern Discovery] Failed to build DFG: {e}')
+    
+    def _discover_petri_net_patterns(self, event_log):
+        """
+        Discover Petri Net from event log and analyze structural patterns
+
+        Uses PM4Py Inductive Miner to discover a Petri net, then analyzes
+        the structure to identify XOR splits, AND splits, and joins.
+
+        Args:
+            event_log: PM4Py event log object
+        """
+        try:
+            from pm4py.algo.discovery.inductive import algorithm as inductive_miner
+
+            self.log('[Pattern Discovery] Discovering Petri net structure...')
+
+            # Discover Petri net using Inductive Miner
+            # Note: Can return ProcessTree or (net, im, fm) depending on variant
+            result = inductive_miner.apply(event_log)
+
+            # Check if result is a tuple (net, im, fm) or ProcessTree
+            if isinstance(result, tuple) and len(result) == 3:
+                net, initial_marking, final_marking = result
+                self.petri_net = (net, initial_marking, final_marking)
+            else:
+                # Result is ProcessTree - convert to Petri net
+                from pm4py.objects.conversion.process_tree import converter as pt_converter
+                net, initial_marking, final_marking = pt_converter.apply(
+                    result)
+                self.petri_net = (net, initial_marking, final_marking)
+
+            # Analyze Petri net structure
+            num_places = len(net.places)
+            num_transitions = len(net.transitions)
+
+            self.log(
+                f'[Pattern Discovery] Discovered Petri net: {num_places} places, {num_transitions} transitions')
+
+            # Build pattern map from Petri net structure
+            self._analyze_petri_net_structure(net)
+
+        except ImportError:
+            self.log(
+                '[Pattern Discovery] PM4Py not available, using fallback pattern detection')
+            self.pm4py_available = False
+        except Exception as e:
+            self.log(f'[Pattern Discovery] Failed to discover Petri net: {e}')
+            self.log('[Pattern Discovery] Using fallback pattern detection')
+            self.pm4py_available = False
+
+    def _analyze_petri_net_structure(self, net):
+        """
+        Analyze Petri net structure to identify control flow patterns
+
+        Identifies:
+        - XOR splits: Place with 1 input arc, N>1 output arcs (exclusive choice)
+        - AND splits: Place with 1 input arc, N>1 output arcs (parallel fork)
+        - XOR joins: Place with N>1 input arcs, 1 output arc (merge)
+        - Loops: Cycles in the Petri net
+
+        Args:
+            net: PM4Py Petri net object
+        """
+        pattern_counts = {'XOR_SPLIT': 0,
+                          'AND_SPLIT': 0, 'XOR_JOIN': 0, 'LOOP': 0}
+
+        for place in net.places:
+            in_arcs = list(place.in_arcs)
+            out_arcs = list(place.out_arcs)
+
+            # Pattern 1: XOR/AND Split
+            # 1 input transition → Place → N output transitions
+            if len(in_arcs) == 1 and len(out_arcs) > 1:
+                source_transition = in_arcs[0].source
+
+                # In Petri nets, distinguishing XOR from AND requires semantics
+                # Simplified: assume XOR split by default (can be refined)
+                for out_arc in out_arcs:
+                    target_transition = out_arc.target
+
+                    # Skip silent transitions (None label)
+                    if source_transition.label and target_transition.label:
+                        key = (source_transition.label,
+                               target_transition.label)
+                        # Mark as XOR_SPLIT (could check for AND patterns)
+                        self.pattern_map[key] = 'XOR_SPLIT'
+                        pattern_counts['XOR_SPLIT'] += 1
+
+            # Pattern 2: XOR Join
+            # N input transitions → Place → 1 output transition
+            elif len(in_arcs) > 1 and len(out_arcs) == 1:
+                target_transition = out_arcs[0].target
+
+                for in_arc in in_arcs:
+                    source_transition = in_arc.source
+
+                    if source_transition.label and target_transition.label:
+                        key = (source_transition.label,
+                               target_transition.label)
+                        self.pattern_map[key] = 'XOR_JOIN'
+                        pattern_counts['XOR_JOIN'] += 1
+
+        # Detect loops (simplified: check for back-arcs in transitions)
+        for transition in net.transitions:
+            if transition.label:
+                # Check if transition can reach itself (simplified check)
+                for out_arc in transition.out_arcs:
+                    place = out_arc.target
+                    for out_arc2 in place.out_arcs:
+                        next_transition = out_arc2.target
+                        if next_transition == transition:
+                            key = (transition.label, transition.label)
+                            self.pattern_map[key] = 'LOOP'
+                            pattern_counts['LOOP'] += 1
+
+        self.log(f'[Pattern Discovery] Detected: {pattern_counts["XOR_SPLIT"]} XOR splits, '
+                 f'{pattern_counts["AND_SPLIT"]} AND splits, {pattern_counts["LOOP"]} loops')
 
     def generate_from_traces(self, traces, validation=0.1, test=0.1):
         """
@@ -294,7 +411,10 @@ class ProcessDataset:
             flow_type = self._detect_flow_type(
                 current_activity, next_activity, i, trace)
 
-            A[i, i + 1] = flow_type
+            # IMPORTANT: Add offset +1 to avoid zero values (0 = padding/no edge)
+            # flow_type=0 (SEQUENCE) → stored as 1
+            # flow_type=1 (XOR_SPLIT) → stored as 2, etc.
+            A[i, i + 1] = flow_type + 1
 
         return A
 
@@ -526,6 +646,30 @@ class ProcessDataset:
             trace.append(activity)
 
         return trace
+
+    def decode_flow_type(self, flow_value):
+        """
+        Decode flow type value with offset correction
+
+        Since we store flow_type + 1 in adjacency matrices to avoid zero values,
+        we need to subtract 1 when decoding.
+
+        Args:
+            flow_value: Integer value from adjacency matrix
+
+        Returns:
+            String label for flow type ('PADDING', 'SEQUENCE', 'XOR_SPLIT', etc.)
+        """
+        if flow_value == 0:
+            return 'PADDING'  # Zero = no edge/padding
+
+        # Subtract offset to get original flow_type index
+        flow_idx = flow_value - 1
+
+        if flow_idx in self.flow_decoder:
+            return self.flow_decoder[flow_idx]
+        else:
+            return 'UNKNOWN'
 
     def decode_batch(self, adjacency_batch, nodes_batch, strict=True):
         """
@@ -853,12 +997,19 @@ class ProcessDataset:
 
 
 if __name__ == '__main__':
-    # Example usage
+    # ===================================================================
+    # TESTING ONLY - Unit tests for ProcessDataset class
+    # ===================================================================
+    # These synthetic traces are ONLY used for testing purposes.
+    # During normal training, the dataset is loaded from XES files.
+    # No synthetic data is generated or used in production.
+    # ===================================================================
+
     print("=" * 60)
     print("ProcessDataset Example")
     print("=" * 60)
 
-    # Create synthetic traces
+    # Create synthetic traces (TESTING ONLY)
     synthetic_traces = [
         ['Start', 'Submit', 'Review', 'Approve', 'End'],
         ['Start', 'Submit', 'Review', 'Reject', 'End'],

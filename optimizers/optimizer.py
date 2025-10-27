@@ -38,7 +38,7 @@ class ProcessGANTrainer:
             gradient_penalty_weight: Weight for gradient penalty (WGAN-GP)
             lambda_adv: Weight for adversarial loss in generator
             lambda_reward: Weight for reward loss in generator
-            
+
         Note:
             Uses AdamW optimizer with decoupled weight decay for better generalization.
             Weight decay values:
@@ -89,6 +89,17 @@ class ProcessGANTrainer:
             'grad_penalty': tf.keras.metrics.Mean(),
             'reward_mean': tf.keras.metrics.Mean(),
         }
+
+    def update_learning_rate(self, new_lr: float):
+        """
+        Update learning rate for all optimizers
+
+        Args:
+            new_lr: New learning rate value
+        """
+        self.optimizer_G.learning_rate.assign(new_lr)
+        self.optimizer_D.learning_rate.assign(new_lr)
+        self.optimizer_V.learning_rate.assign(new_lr)
 
     @tf.function
     def train_discriminator_step(self, real_adj, real_nodes, z, training=True):
@@ -318,15 +329,16 @@ class ProcessGANTrainer:
 
         # Compute rewards (for RL)
         rl_enabled = lambda_mix < 1.0 and reward_function is not None and self.dataset is not None
-        
+
         # Log RL status once
         if not hasattr(self, '_rl_status_logged'):
             if rl_enabled:
                 print(f"RL Training enabled (lambda_mix={lambda_mix:.2f})")
             else:
-                print(f"⚠ RL disabled: lambda_mix={lambda_mix}, reward_fn={reward_function is not None}, dataset={self.dataset is not None}")
+                print(
+                    f"⚠ RL disabled: lambda_mix={lambda_mix}, reward_fn={reward_function is not None}, dataset={self.dataset is not None}")
             self._rl_status_logged = True
-        
+
         if rl_enabled:
             # Generate traces for reward computation
             fake_adj, fake_nodes = self.model.generator(
@@ -334,43 +346,44 @@ class ProcessGANTrainer:
 
             # Convert to traces using matrices_to_traces
             from models.process_gan import matrices_to_traces
-            
+
             # Convert to numpy and get discrete indices
             fake_adj_np = fake_adj.numpy()
             fake_nodes_np = fake_nodes.numpy()
-            
+
             # Argmax to get hard assignments (batch, max_activities, max_activities)
             fake_edges_indices = np.argmax(fake_adj_np, axis=-1)
-            
+
             # Convert matrices to traces using dataset
             fake_traces = matrices_to_traces(
                 fake_edges_indices, fake_nodes_np, self.dataset
             )
-            
+
             # Compute rewards using actual reward function
             rewards_fake_np = reward_function.compute_reward(fake_traces)
             rewards_fake = tf.constant(rewards_fake_np, dtype=tf.float32)
-            
+
             # For real traces, we need to decode from real_adj and real_nodes
             # real_adj and real_nodes are already numpy arrays from data.next_train_batch
-            
+
             # Create cache key from real_adj (unique identifier for this batch)
             cache_key = tuple(map(lambda x: tuple(x.flatten()), real_adj))
-            
+
             # Check cache for real rewards (real traces don't change during training)
             if cache_key in self.real_rewards_cache:
                 rewards_real_np = self.real_rewards_cache[cache_key]
                 self.cache_hits += 1
             else:
                 # Cache miss - compute rewards and store
-                real_nodes_onehot = np.eye(self.dataset.activity_num_types)[real_nodes]
+                real_nodes_onehot = np.eye(
+                    self.dataset.activity_num_types)[real_nodes]
                 real_traces = matrices_to_traces(
                     real_adj, real_nodes_onehot, self.dataset
                 )
                 rewards_real_np = reward_function.compute_reward(real_traces)
                 self.real_rewards_cache[cache_key] = rewards_real_np
                 self.cache_misses += 1
-            
+
             rewards_real = tf.constant(rewards_real_np, dtype=tf.float32)
 
             # Train generator with RL
@@ -421,8 +434,7 @@ class ProcessGANTrainer:
     def get_metrics(self):
         """Get current metric values"""
         return {name: metric.result().numpy() for name, metric in self.metrics.items()}
-    
-    
+
     def clear_cache(self):
         """Clear reward cache (useful between epochs or datasets)"""
         self.real_rewards_cache.clear()

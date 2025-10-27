@@ -30,28 +30,30 @@ from optimizers.process_optimizer import ProcessGANTrainer
 config = {
     # Data
     'data_file': 'data/helpdesk_parsed.xes',
-    'max_activities': 10,  # Ottimale per helpdesk (95° percentile)
+    'max_activities': 6,  # Ottimale per helpdesk (95° percentile)
     # Aumentato per dataset piccolo (validazione più robusta)
     'validation_split': 0.15,
     'test_split': 0.1,
 
     # Model architecture
-    'z_dim': 32,  # 64→32: Meno parametri, meno overfitting, più veloce
-    'decoder_units': (64, 128, 128),  # Dimezzato: ~75% parametri in meno
-    'discriminator_units': (64, 64),  # Dimezzato: bilanciato con generator
-    'mlp_units': 64,  # 128→64: Value network più leggero
+    'z_dim': 64,  # 64→32: Meno parametri, meno overfitting, più veloce
+    'decoder_units': (64, 128, 256),  # Dimezzato: ~75% parametri in meno
+    'discriminator_units': (64, 128),  # Dimezzato: bilanciato con generator
+    'mlp_units': 256,  # 128→64: Value network più leggero
     'dropout_rate': 0.2,  # 0.1→0.2: Più regolarizzazione (dataset piccolo)
 
     # Training
-    'batch_size': 16,  # 32→16: Meno memoria, più step (migliore per CPU)
-    'epochs': 60,  # 50→60: Compensa modello più piccolo
-    'learning_rate': 2e-4,  # 3e-4→2e-4: Più stabile per modello piccolo
-    'n_critic': 2,  # 3→2: ~33% più veloce, accettabile per CPU
+    'batch_size': 64,  # 32→16: Meno memoria, più step (migliore per CPU)
+    'epochs': 150,  # 50→60: Compensa modello più piccolo
+    'learning_rate': 1e-4,  # 3e-4→2e-4: Più stabile per modello piccolo
+    'learning_rate_D': 5e-4,  # 3e-4→2e-4: Più stabile per modello piccolo
+    'learning_rate_V': 1e-4,  # 3e-4→2e-4: Più stabile per modello piccolo
+    'n_critic': 5,  # 3→2: ~33% più veloce, accettabile per CPU
 
     # GAN/RL mixing
-    'lambda_start': 0.7,  # 0.8→0.7: RL attivo prima (30% da subito)
-    'lambda_end': 0.4,    # 0.5→0.4: Più RL alla fine (60%)
-    'lambda_decay_start': 3,  # 5→3: Decay prima (meno warm-up)
+    'lambda_start': 1,  # 0.8→0.7: RL attivo prima (30% da subito)
+    'lambda_end': 0.2,    # 0.5→0.4: Più RL alla fine (60%)
+    'lambda_decay_start': 50,  # 5→3: Decay prima (meno warm-up)
 
     # Hard constraints
     'enforce_start': True,   # Forza START come prima attività
@@ -59,10 +61,10 @@ config = {
     # Reward function
     'use_rl': True,
     'reward_weights': {
-        'validity': 0.50,      # Aumentato da 0.40 → 0.50 (vincolo START/END)
-        'fitness': 0.25,       # Ridotto da 0.30 → 0.25
-        'conformance': 0.15,   # Ridotto da 0.20 → 0.15
-        'diversity': 0.10      # Invariato
+        'validity': 0.80,      # Aumentato da 0.40 → 0.50 (vincolo START/END)
+        'fitness': 0.05,       # Ridotto da 0.30 → 0.25
+        'conformance': 0.10,   # Ridotto da 0.20 → 0.15
+        'diversity': 0.05      # Invariato
     },
 
     # 'reward_weights': {
@@ -849,6 +851,8 @@ def main():
         model,
         dataset=data,  # Pass dataset for trace decoding
         learning_rate=config_merged['learning_rate'],
+        learning_rate_D=config_merged['learning_rate_D'],
+        learning_rate_V=config_merged['learning_rate_V'],
         gradient_penalty_weight=10.0,
         lambda_adv=0.6,
         lambda_reward=0.4

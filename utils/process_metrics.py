@@ -293,13 +293,13 @@ class ProcessRewardFunction:
                 continue
 
             # Rule 3: Must end with END activity
-            if trace[-1] != self.end_activity:
-                score *= 0.5
+            #if trace[-1] != self.end_activity:
+            #    score *= 0.5
 
             # Rule 3b: END must appear EXACTLY ONCE (HARD CONSTRAINT)
-            if trace.count(self.end_activity) != 1:
-                scores.append(0.0)
-                continue
+            #if trace.count(self.end_activity) != 1:
+            #    scores.append(0.0)
+            #    continue
 
             # Rule 4: Reasonable length (3-20 activities)
             if not (3 <= len(trace) <= 20):
@@ -312,9 +312,9 @@ class ProcessRewardFunction:
                     break
 
             # Rule 6: END only at last position (HARD CONSTRAINT)
-            if self.end_activity in trace[:-1]:
-                scores.append(0.0)  # Invalida completamente
-                continue
+            #if self.end_activity in trace[:-1]:
+            #    scores.append(0.0)  # Invalida completamente
+            #    continue
 
             scores.append(score)
 

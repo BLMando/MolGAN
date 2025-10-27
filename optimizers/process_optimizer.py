@@ -26,7 +26,7 @@ class ProcessGANTrainer:
     - tf.keras.optimizers
     """
 
-    def __init__(self, model, dataset=None, learning_rate=1e-4, gradient_penalty_weight=10.0,
+    def __init__(self, model, dataset=None, learning_rate=1e-4, learning_rate_D=2e-4, learning_rate_V=1e-4, gradient_penalty_weight=10.0,
                  lambda_adv=0.6, lambda_reward=0.4):
         """
         Initialize trainer
@@ -67,14 +67,14 @@ class ProcessGANTrainer:
         )
         # Discriminator: moderate weight decay
         self.optimizer_D = tf.keras.optimizers.AdamW(
-            learning_rate=learning_rate,
+            learning_rate=learning_rate_D,
             weight_decay=0.005,  # 0.5% weight decay
             beta_1=0.5,
             beta_2=0.9
         )
         # Value Network: lower weight decay for RL reward prediction
         self.optimizer_V = tf.keras.optimizers.AdamW(
-            learning_rate=learning_rate,
+            learning_rate=learning_rate_V,
             weight_decay=0.001,  # 0.1% weight decay
             beta_1=0.5,
             beta_2=0.9

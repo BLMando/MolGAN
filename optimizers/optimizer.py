@@ -322,7 +322,7 @@ class ProcessGANTrainer:
         # Log RL status once
         if not hasattr(self, '_rl_status_logged'):
             if rl_enabled:
-                print(f"✓ RL Training enabled (lambda_mix={lambda_mix:.2f})")
+                print(f"RL Training enabled (lambda_mix={lambda_mix:.2f})")
             else:
                 print(f"⚠ RL disabled: lambda_mix={lambda_mix}, reward_fn={reward_function is not None}, dataset={self.dataset is not None}")
             self._rl_status_logged = True
@@ -428,59 +428,3 @@ class ProcessGANTrainer:
         self.real_rewards_cache.clear()
         self.cache_hits = 0
         self.cache_misses = 0
-
-
-if __name__ == '__main__':
-    # Test ProcessGAN Trainer TF2
-    print("=" * 70)
-    print("ProcessGAN Trainer Test")
-    print("=" * 70)
-
-    from models.process_gan import ProcessGAN
-
-    # Configuration
-    config = {
-        'max_activities': 10,
-        'flow_types': 5,
-        'activity_types': 8,
-        'embedding_dim': 16,
-        'decoder_units': (128, 256, 512),
-        'discriminator_units': (128, 64),
-        'mlp_units': 128,
-    }
-
-    print("\nCreating model and trainer...")
-    model = ProcessGAN(**config)
-    trainer = ProcessGANTrainer(model, learning_rate=1e-4)
-
-    print("✓ Model created")
-    print("✓ Trainer created")
-
-    # Dummy data
-    print("\nTesting training step...")
-    batch_size = 4
-    real_adj = np.zeros(
-        (batch_size, config['max_activities'], config['max_activities']), dtype=np.int32)
-    real_nodes = np.zeros(
-        (batch_size, config['max_activities']), dtype=np.int32)
-
-    # Training step
-    losses = trainer.train_step(
-        real_adj=real_adj,
-        real_nodes=real_nodes,
-        batch_size=batch_size,
-        n_critic=5,
-        reward_function=None,
-        lambda_mix=1.0,
-        temperature=1.0
-    )
-
-    print("\nLoss values:")
-    for key, value in losses.items():
-        print(f"  {key}: {value:.4f}")
-
-    print("\n✓ Training step successful")
-
-    print("\n" + "=" * 70)
-    print("ProcessGAN Trainer TF2 test completed successfully!")
-    print("=" * 70)

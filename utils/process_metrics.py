@@ -745,7 +745,7 @@ class ProcessMetrics:
     """
 
     @staticmethod
-    def valid_traces(traces: List[List[str]], start_activity='Start', end_activity='End') -> List[List[str]]:
+    def valid_traces(traces: List[List[str]], start_activity='START', end_activity='End') -> List[List[str]]:
         """
         Return only valid traces with strict position constraints (data-driven)
 
@@ -761,11 +761,11 @@ class ProcessMetrics:
             t for t in traces
             if len(t) >= 3
             and t[0] == start_activity           # Deve iniziare con START
-            and t[-1] == end_activity            # Deve finire con END
+            #and t[-1] == end_activity            # Deve finire con END
             and t.count(start_activity) == 1     # START esattamente 1 volta
-            and t.count(end_activity) == 1       # END esattamente 1 volta
+            #and t.count(end_activity) == 1       # END esattamente 1 volta
             and start_activity not in t[1:]      # START solo in posizione 0
-            and end_activity not in t[:-1]       # END solo in ultima posizione
+            #and end_activity not in t[:-1]       # END solo in ultima posizione
         ]
 
     @staticmethod

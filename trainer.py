@@ -28,6 +28,7 @@ from training import (
     CheckpointManager,
     LambdaMixScheduler,
     TemperatureScheduler,
+    LearningRateScheduler,
     ModelEvaluator
 )
 from visualization import TrainingVisualizer
@@ -120,6 +121,15 @@ def main():
         temp_start=config['temperature_start'],
         temp_end=config['temperature_end'],
         decay_rate=config['temperature_decay']
+    )
+
+    # Learning rate scheduler (Cosine Annealing with Warm Restarts)
+    lr_scheduler = LearningRateScheduler(
+        lr_initial=config['learning_rate'],
+        lr_min=config['learning_rate'] * 0.01,  # Min LR = 1% of initial
+        cycle_length=50,  # Restart every 50 epochs
+        cycle_mult=1.5,   # Increase cycle length by 1.5x each restart
+        warmup_epochs=5   # 5 epochs of linear warmup
     )
 
     # ─────────────────────────────────────────────────────────
@@ -301,6 +311,10 @@ def main():
         # Get dynamic parameters from schedulers
         lambda_mix = lambda_scheduler.get_lambda(epoch)
         temperature = temperature_scheduler.get_temperature(epoch)
+        current_lr = lr_scheduler.get_learning_rate(epoch)
+
+        # Update learning rate
+        trainer.update_learning_rate(current_lr)
 
         # Reset metrics
         trainer.reset_metrics()
@@ -362,6 +376,7 @@ def main():
                 n_samples=config['n_samples_eval'],
                 temperature=temperature
             )
+            log(f"Epoch {epoch + 1}/{config['epochs']} - LR: {current_lr:.2e}, Lambda: {lambda_mix:.3f}, Temp: {temperature:.3f}")
             evaluator.print_epoch_summary(
                 epoch=epoch,
                 total_epochs=config['epochs'],

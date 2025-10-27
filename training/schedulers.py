@@ -3,6 +3,8 @@ Training Schedulers
 Lambda mixing, temperature decay, learning rate schedules
 """
 
+import math
+
 
 class LambdaMixScheduler:
     """
@@ -80,3 +82,79 @@ class TemperatureScheduler:
         """
         temp = self.temp_start * (self.decay_rate ** epoch)
         return max(temp, self.temp_end)
+
+
+class LearningRateScheduler:
+    """
+    Cosine Annealing Learning Rate Scheduler with Warm Restarts
+
+    Ideal for GAN training as it:
+    - Allows exploration of different local minima via periodic restarts
+    - Prevents premature convergence in adversarial training
+    - Smooth decay within each cycle
+
+    Uses cosine decay: lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(π * t / T))
+    where t is current step in cycle, T is cycle length.
+    """
+
+    def __init__(self, lr_initial: float, lr_min: float = 1e-6,
+                 cycle_length: int = 50, cycle_mult: float = 1.5,
+                 warmup_epochs: int = 5):
+        """
+        Initialize learning rate scheduler
+
+        Args:
+            lr_initial: Initial/maximum learning rate (e.g., 1e-4)
+            lr_min: Minimum learning rate (e.g., 1e-6)
+            cycle_length: Initial cycle length in epochs (e.g., 50)
+            cycle_mult: Cycle length multiplier after each restart (e.g., 1.5)
+            warmup_epochs: Number of warmup epochs (linear ramp-up)
+        """
+        self.lr_initial = lr_initial
+        self.lr_min = lr_min
+        self.cycle_length = cycle_length
+        self.cycle_mult = cycle_mult
+        self.warmup_epochs = warmup_epochs
+
+        self.current_cycle = 0
+        self.current_cycle_length = cycle_length
+        self.cycle_start_epoch = warmup_epochs
+
+    def get_learning_rate(self, epoch: int) -> float:
+        """
+        Compute learning rate for current epoch
+
+        Args:
+            epoch: Current training epoch
+
+        Returns:
+            Learning rate value
+        """
+        # Warmup phase: linear ramp-up
+        if epoch < self.warmup_epochs:
+            return self.lr_initial * (epoch + 1) / self.warmup_epochs
+
+        # Determine position in current cycle
+        epoch_in_training = epoch - self.warmup_epochs
+
+        # Check if we need to start a new cycle
+        if epoch_in_training >= self.cycle_start_epoch + self.current_cycle_length:
+            self.current_cycle += 1
+            self.cycle_start_epoch = epoch_in_training
+            self.current_cycle_length = int(
+                self.cycle_length * (self.cycle_mult ** self.current_cycle))
+
+        # Cosine annealing within cycle
+        t = epoch_in_training - self.cycle_start_epoch
+        T = self.current_cycle_length
+
+        cos_decay = 0.5 * (1 + math.cos(math.pi * t / T))
+        lr = self.lr_min + (self.lr_initial - self.lr_min) * cos_decay
+
+        return lr
+
+    def reset_cycle(self):
+        """Reset to start of first cycle (useful for manual restarts)"""
+        self.current_cycle = 0
+        self.current_cycle_length = self.cycle_length
+        self.cycle_start_epoch = self.warmup_epochs

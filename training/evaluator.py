@@ -57,17 +57,29 @@ class ModelEvaluator:
         """
         z = self.model.sample_z(n_samples)
 
-        edges, nodes = self.model.generator(
-            z, training=False, temperature=temperature)
+        # Check if LSTM architecture
+        try:
+            # LSTM generator returns only nodes (sequences)
+            nodes = self.model.generator(
+                z, training=False, temperature=temperature)
 
-        # Convert to numpy and argmax
-        edges_np = edges.numpy()
-        nodes_np = nodes.numpy()
+            # Convert to traces using LSTM utility
+            from models.process_gan_lstm import sequences_to_traces
+            nodes_np = nodes.numpy()
+            traces = sequences_to_traces(nodes_np, self.dataset)
+        except:
+            # Dense generator returns edges and nodes
+            edges, nodes = self.model.generator(
+                z, training=False, temperature=temperature)
 
-        nodes_indices = np.argmax(nodes_np, axis=-1)
-        edges_indices = np.argmax(edges_np, axis=-1)
+            # Convert to numpy and argmax
+            edges_np = edges.numpy()
+            nodes_np = nodes.numpy()
 
-        traces = matrices_to_traces(edges_indices, nodes_np, self.dataset)
+            nodes_indices = np.argmax(nodes_np, axis=-1)
+            edges_indices = np.argmax(edges_np, axis=-1)
+
+            traces = matrices_to_traces(edges_indices, nodes_np, self.dataset)
 
         return traces
 

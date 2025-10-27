@@ -168,29 +168,29 @@ class ValidityScorer:
                 scores.append(0.0)
                 continue
 
-            # Rule 3: END at last position
-            if trace[-1] != self.end_activity:
-                score *= 0.5
+            # Rule 3: Must end with END activity
+            #if trace[-1] != self.end_activity:
+            #    score *= 0.5
 
-            # Rule 3b: END exactly once
-            if trace.count(self.end_activity) != 1:
-                scores.append(0.0)
-                continue
+            # Rule 3b: END must appear EXACTLY ONCE (HARD CONSTRAINT)
+            #if trace.count(self.end_activity) != 1:
+            #    scores.append(0.0)
+            #    continue
 
-            # Rule 3c: END only at last position (HARD CONSTRAINT)
-            if self.end_activity in trace[:-1]:
-                scores.append(0.0)
-                continue
-
-            # Rule 4: Reasonable length (3-20)
+            # Rule 4: Reasonable length (3-20 activities)
             if not (3 <= len(trace) <= 20):
                 score *= 0.7
 
-            # Rule 5: No consecutive duplicates
+            # Rule 5: No consecutive duplicate activities
             for i in range(len(trace) - 1):
                 if trace[i] == trace[i+1]:
                     score *= 0.8
                     break
+
+            # Rule 6: END only at last position (HARD CONSTRAINT)
+            #if self.end_activity in trace[:-1]:
+            #    scores.append(0.0)  # Invalida completamente
+            #    continue
 
             scores.append(score)
 

@@ -174,6 +174,62 @@ class ProcessDataset:
         self.validation_count = len(self.validation_idx)
         self.train_count = len(self.train_idx)
 
+        # Create length-based buckets for batch grouping
+        self._create_length_buckets()
+
+    def _create_length_buckets(self):
+        """Create buckets of trace indices grouped by length"""
+        self.length_buckets = {
+            '3-5': [],
+            '6-8': [],
+            '9-12': [],
+            '13-15': []
+        }
+
+        for idx in self.train_idx:
+            trace_len = len(self.data[idx])
+
+            if 3 <= trace_len <= 5:
+                self.length_buckets['3-5'].append(idx)
+            elif 6 <= trace_len <= 8:
+                self.length_buckets['6-8'].append(idx)
+            elif 9 <= trace_len <= 12:
+                self.length_buckets['9-12'].append(idx)
+            elif 13 <= trace_len <= 15:
+                self.length_buckets['13-15'].append(idx)
+
+        # Log bucket sizes
+        for bucket_name, indices in self.length_buckets.items():
+            self.log(f'  Bucket {bucket_name}: {len(indices)} traces', date=False)
+
+    def next_train_batch_grouped(self, batch_size):
+        """
+        Get next training batch with similar-length traces (reduces padding)
+
+        Args:
+            batch_size: Batch size
+
+        Returns:
+            (traces_batch, adjacency_batch, nodes_batch, features_batch)
+        """
+        # Filter non-empty buckets
+        available_buckets = [name for name, indices in self.length_buckets.items()
+                            if len(indices) >= batch_size]
+
+        if not available_buckets:
+            # Fallback to regular batch if no bucket has enough samples
+            return self.next_train_batch(batch_size)
+
+        # Randomly select bucket
+        bucket_name = np.random.choice(available_buckets)
+        bucket_indices = self.length_buckets[bucket_name]
+
+        # Sample batch from bucket
+        sampled_idx = np.random.choice(bucket_indices, size=batch_size, replace=False)
+
+        traces_batch = [self.data[i] for i in sampled_idx]
+        return traces_batch, self.data_A[sampled_idx], self.data_X[sampled_idx], self.data_F[sampled_idx]
+
     def next_train_batch(self, batch_size):
         """
         Get next training batch

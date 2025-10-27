@@ -186,34 +186,63 @@ def main():
     # 5. BUILD MODEL
     # ─────────────────────────────────────────────────────────
 
-    log("\nBuilding ProcessGAN model...")
-    model = ProcessGAN(
-        max_activities=data.max_activities,
-        flow_types=data.flow_num_types,
-        activity_types=data.activity_num_types,
-        embedding_dim=config['z_dim'],
-        decoder_units=config['decoder_units'],
-        discriminator_units=config['discriminator_units'],
-        mlp_units=config['mlp_units'],
-        dropout_rate=config['dropout_rate'],
-        enforce_start=config['enforce_start']
-    )
+    # Check if LSTM architecture is enabled
+    use_lstm = config.get('use_lstm_architecture', False)
 
-    # ─────────────────────────────────────────────────────────
-    # 5. CREATE TRAINER
-    # ─────────────────────────────────────────────────────────
+    if use_lstm:
+        log("\nBuilding ProcessGAN LSTM model...")
+        from models.process_gan_lstm import ProcessGANLSTM
+        from optimizers.optimizer_lstm import ProcessGANLSTMTrainer
 
-    log("Creating trainer...")
-    trainer = ProcessGANTrainer(
-        model,
-        dataset=data,  # Pass dataset for trace decoding
-        learning_rate=config['learning_rate'],
-        learning_rate_D=config['learning_rate_D'],
-        learning_rate_V=config['learning_rate_V'],
-        gradient_penalty_weight=10.0,
-        lambda_adv=0.6,
-        lambda_reward=0.4
-    )
+        model = ProcessGANLSTM(
+            max_activities=data.max_activities,
+            activity_types=data.activity_num_types,
+            embedding_dim=config['z_dim'],
+            lstm_hidden_dim=config.get('lstm_hidden_dim', 256),
+            lstm_num_layers=config.get('lstm_num_layers', 2),
+            mlp_units=config['mlp_units'],
+            dropout_rate=config['dropout_rate']
+        )
+
+        log("Creating LSTM trainer...")
+        trainer = ProcessGANLSTMTrainer(
+            model,
+            dataset=data,
+            learning_rate=config['learning_rate'],
+            learning_rate_D=config['learning_rate_D'],
+            learning_rate_V=config['learning_rate_V'],
+            gradient_penalty_weight=10.0,
+            lambda_adv=0.6,
+            lambda_reward=0.4
+        )
+    else:
+        log("\nBuilding ProcessGAN model (Dense/R-GCN architecture)...")
+        from models.process_gan import ProcessGAN
+        from optimizers.optimizer import ProcessGANTrainer
+
+        model = ProcessGAN(
+            max_activities=data.max_activities,
+            flow_types=data.flow_num_types,
+            activity_types=data.activity_num_types,
+            embedding_dim=config['z_dim'],
+            decoder_units=config['decoder_units'],
+            discriminator_units=config['discriminator_units'],
+            mlp_units=config['mlp_units'],
+            dropout_rate=config['dropout_rate'],
+            enforce_start=config.get('enforce_start', True)
+        )
+
+        log("Creating trainer...")
+        trainer = ProcessGANTrainer(
+            model,
+            dataset=data,
+            learning_rate=config['learning_rate'],
+            learning_rate_D=config['learning_rate_D'],
+            learning_rate_V=config['learning_rate_V'],
+            gradient_penalty_weight=10.0,
+            lambda_adv=0.6,
+            lambda_reward=0.4
+        )
 
     # Build and initialize model
     build_and_initialize_model(model, config['z_dim'])
@@ -278,19 +307,37 @@ def main():
 
         # Training epoch
         for step in range(steps_per_epoch):
-            _, adj_batch, nodes_batch, _ = data.next_train_batch(
-                config['batch_size'])
+            # Get batch (with optional grouping)
+            use_batch_grouping = config.get('use_batch_grouping', False)
+            if use_batch_grouping:
+                _, adj_batch, nodes_batch, _ = data.next_train_batch_grouped(
+                    config['batch_size'])
+            else:
+                _, adj_batch, nodes_batch, _ = data.next_train_batch(
+                    config['batch_size'])
 
-            # Training step (losses are accumulated in trainer.metrics)
-            _ = trainer.train_step(
-                real_adj=adj_batch,
-                real_nodes=nodes_batch,
-                batch_size=config['batch_size'],
-                n_critic=config['n_critic'],
-                reward_function=reward_function,
-                lambda_mix=lambda_mix,
-                temperature=temperature
-            )
+            # Training step (different signatures for LSTM vs Dense)
+            if use_lstm:
+                # LSTM trainer expects only nodes (sequences)
+                _ = trainer.train_step(
+                    real_nodes=nodes_batch,
+                    batch_size=config['batch_size'],
+                    n_critic=config['n_critic'],
+                    reward_function=reward_function,
+                    lambda_mix=lambda_mix,
+                    temperature=temperature
+                )
+            else:
+                # Dense trainer expects both adjacency and nodes
+                _ = trainer.train_step(
+                    real_adj=adj_batch,
+                    real_nodes=nodes_batch,
+                    batch_size=config['batch_size'],
+                    n_critic=config['n_critic'],
+                    reward_function=reward_function,
+                    lambda_mix=lambda_mix,
+                    temperature=temperature
+                )
 
         # Get average losses over all steps
         avg_losses = trainer.get_metrics()

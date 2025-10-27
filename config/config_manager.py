@@ -90,6 +90,8 @@ class ConfigManager:
             flat_config['batch_size'] = config['training']['batch_size']
             flat_config['epochs'] = config['training']['epochs']
             flat_config['learning_rate'] = config['training']['learning_rate']
+            flat_config['learning_rate_D'] = config['training']['learning_rate_D']
+            flat_config['learning_rate_V'] = config['training']['learning_rate_V']
             flat_config['n_critic'] = config['training']['n_critic']
             flat_config['gradient_penalty_weight'] = config['training'].get(
                 'gradient_penalty_weight', 10.0)

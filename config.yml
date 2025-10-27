@@ -1,29 +1,37 @@
 data:
   data_file: data/helpdesk_parsed.xes
-  max_activities: 10                  # Aumentato da 6 a 10 (95° percentile Helpdesk)
+  max_activities: 12                  # Aumentato da 6 a 12 per tracce più lunghe
   validation_split: 0.15
   test_split: 0.1
 
 model:
-  z_dim: 64                           
-  decoder_units: (128, 256, 256, 128) # Aggiunto layer finale, struttura simmetrica
-  discriminator_units: (128, 128)     
-  mlp_units: 128                      
+  z_dim: 128                           # Aumentato da 64 a 128 per maggiore capacità
+  decoder_units: (128, 256, 512, 256, 128) # Architettura encoder-decoder simmetrica
+  discriminator_units: (128, 256, 128)     # Aggiunto layer intermedio per feature extraction
+  mlp_units: 128
   dropout_rate: 0.1                   # Regolarizzazione moderata
+  use_lstm_architecture: false        # Set to true per usare LSTM-based architecture
+
+  # LSTM-specific parameters (used when use_lstm_architecture: true)
+  lstm_hidden_dim: 256                # Hidden dimension for LSTM layers
+  lstm_num_layers: 2                  # Number of LSTM layers
 
 training:
-  batch_size: 32                      
-  epochs: 1                        
-  learning_rate: 0.00005                 
-  n_critic: 5                         
+  batch_size: 128                      # Ridotto da 512 per stabilità su dataset piccoli
+  epochs: 150
+  learning_rate: !!float 5e-5          # Più conservative (era 1e-4)
+  learning_rate_D: !!float 2e-4        # Ridotto da 5e-4
+  learning_rate_V: !!float 5e-5        # Più conservative (era 1e-4)
+  n_critic: 5
   gradient_penalty_weight: 10.0
+  use_batch_grouping: false            # Set to true per raggruppare batch per lunghezza
   
   # ─────────────────────────────────────────────────────────
   # Gumbel-Softmax
   # ─────────────────────────────────────────────────────────
-  temperature_start: 5.0              
-  temperature_end: 0.5                
-  temperature_decay: 0.96             
+  temperature_start: 5.0
+  temperature_end: 0.5
+  temperature_decay: 0.98             # Più graduale (era 0.96) per exploration più lunga             
   
   # ─────────────────────────────────────────────────────────
   # GAN/RL Mixing
@@ -47,17 +55,17 @@ reward:
   
   # Phase 1: Epochs 0-50 (VALIDITY FOCUS)
   weights_early:
-    validity: 0.80        
-    fitness: 0.15         
-    conformance: 0.05     
-    diversity: 0.00       
+    validity: 0.85        # Aumentato da 0.80 (fitness eliminato)
+    fitness: 0.00         # Eliminato (da note.md: "fitness non ci interessa")
+    conformance: 0.10     # Aumentato da 0.05
+    diversity: 0.05       # Aggiunto (era 0.00)       
   
   # Phase 2: Epochs 50+ (BALANCED)
   weights_late:
-    validity: 0.40        
-    fitness: 0.30         
-    conformance: 0.20     
-    diversity: 0.10       
+    validity: 0.50        # Aumentato da 0.40 (fitness ridistribuito)
+    fitness: 0.00         # Eliminato (da note.md: "fitness non ci interessa")
+    conformance: 0.30     # Aumentato da 0.20
+    diversity: 0.20       # Aumentato da 0.10       
   
   transition_epoch: 50    # Epoca di transizione tra early/late
 

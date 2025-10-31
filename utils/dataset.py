@@ -151,7 +151,7 @@ class ProcessDataset:
 
     def _generate_train_validation_test(self, validation_split, test_split):
         """
-        Split dataset into train/val/test
+        Split dataset into train/val/test with stratification by trace length
 
         Args:
             validation_split: Fraction for validation
@@ -159,16 +159,42 @@ class ProcessDataset:
         """
         n = len(self.data)
 
-        # Shuffle indices
-        indices = np.random.permutation(n)
+        # Group indices by trace length
+        length_groups = {}
+        for idx in range(n):
+            trace_len = len(self.data[idx])
+            if trace_len not in length_groups:
+                length_groups[trace_len] = []
+            length_groups[trace_len].append(idx)
 
-        # Split
-        test_size = int(n * test_split)
-        val_size = int(n * validation_split)
+        # Perform stratified split for each length group
+        train_indices = []
+        val_indices = []
+        test_indices = []
 
-        self.test_idx = indices[:test_size]
-        self.validation_idx = indices[test_size:test_size + val_size]
-        self.train_idx = indices[test_size + val_size:]
+        for trace_len, indices in length_groups.items():
+            # Shuffle indices for this length group
+            indices = np.random.permutation(indices)
+
+            # Calculate split sizes for this group
+            n_group = len(indices)
+            test_size = max(1, int(n_group * test_split))  # At least 1 sample
+            val_size = max(1, int(n_group * validation_split))
+
+            # Split
+            test_indices.extend(indices[:test_size])
+            val_indices.extend(indices[test_size:test_size + val_size])
+            train_indices.extend(indices[test_size + val_size:])
+
+        # Convert to numpy arrays
+        self.test_idx = np.array(test_indices)
+        self.validation_idx = np.array(val_indices)
+        self.train_idx = np.array(train_indices)
+
+        # Shuffle the indices
+        np.random.shuffle(self.test_idx)
+        np.random.shuffle(self.validation_idx)
+        np.random.shuffle(self.train_idx)
 
         self.test_count = len(self.test_idx)
         self.validation_count = len(self.validation_idx)
@@ -229,6 +255,53 @@ class ProcessDataset:
 
         traces_batch = [self.data[i] for i in sampled_idx]
         return traces_batch, self.data_A[sampled_idx], self.data_X[sampled_idx], self.data_F[sampled_idx]
+
+    def next_train_batch_balanced(self, batch_size):
+        """
+        Get next training batch with balanced sampling across trace lengths
+
+        Samples uniformly from all length buckets to ensure the model sees
+        equal frequency of all trace lengths during training, regardless of
+        the actual distribution in the dataset.
+
+        Args:
+            batch_size: Batch size
+
+        Returns:
+            (traces_batch, adjacency_batch, nodes_batch, features_batch)
+        """
+        # Filter non-empty buckets
+        available_buckets = [name for name, indices in self.length_buckets.items()
+                            if len(indices) > 0]
+
+        if not available_buckets:
+            # Fallback to regular batch if no buckets available
+            return self.next_train_batch(batch_size)
+
+        # Calculate samples per bucket (distribute evenly)
+        samples_per_bucket = batch_size // len(available_buckets)
+        remainder = batch_size % len(available_buckets)
+
+        sampled_indices = []
+
+        for i, bucket_name in enumerate(available_buckets):
+            bucket_indices = self.length_buckets[bucket_name]
+
+            # Add extra sample to first 'remainder' buckets
+            n_samples = samples_per_bucket + (1 if i < remainder else 0)
+
+            # Sample with replacement if bucket is smaller than needed
+            replace = len(bucket_indices) < n_samples
+
+            sampled = np.random.choice(bucket_indices, size=n_samples, replace=replace)
+            sampled_indices.extend(sampled)
+
+        # Shuffle the combined batch
+        sampled_indices = np.array(sampled_indices)
+        np.random.shuffle(sampled_indices)
+
+        traces_batch = [self.data[i] for i in sampled_indices]
+        return traces_batch, self.data_A[sampled_indices], self.data_X[sampled_indices], self.data_F[sampled_indices]
 
     def next_train_batch(self, batch_size):
         """

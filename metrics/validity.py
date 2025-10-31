@@ -153,20 +153,17 @@ class ValidityScorer:
                 scores.append(0.0)
                 continue
 
-            # Rule 2: START at position 0 (HARD CONSTRAINT)
+            # Rule 2: START at position 0 (CRITICAL PENALTY)
             if trace[0] != self.start_activity:
-                scores.append(0.0)
-                continue
+                score *= 0.1  # 90% penalty - critical violation
 
-            # Rule 2b: START only at position 0
+            # Rule 2b: START only at position 0 (STRONG PENALTY)
             if self.start_activity in trace[1:]:
-                scores.append(0.0)
-                continue
+                score *= 0.3  # 70% penalty - strong violation
 
-            # Rule 2c: START exactly once
+            # Rule 2c: START exactly once (SEVERE PENALTY)
             if trace.count(self.start_activity) != 1:
-                scores.append(0.0)
-                continue
+                score *= 0.2  # 80% penalty - severe violation
 
             # Rule 3: Must end with END activity
             #if trace[-1] != self.end_activity:

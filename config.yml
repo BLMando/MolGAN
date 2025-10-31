@@ -10,7 +10,8 @@ model:
   discriminator_units: (128, 256, 128)     # Aggiunto layer intermedio per feature extraction
   mlp_units: 128
   dropout_rate: 0.1                   # Regolarizzazione moderata
-  use_lstm_architecture: false        # Set to true per usare LSTM-based architecture
+  use_lstm_architecture: false
+  use_simplified_lstm_architecture: false
 
   # LSTM-specific parameters (used when use_lstm_architecture: true)
   lstm_hidden_dim: 256                # Hidden dimension for LSTM layers
@@ -24,7 +25,8 @@ training:
   learning_rate_V: !!float 5e-5        # Più conservative (era 1e-4)
   n_critic: 5
   gradient_penalty_weight: 10.0
-  use_batch_grouping: false            # Set to true per raggruppare batch per lunghezza
+  use_batch_grouping: false            # Set to true per raggruppare batch per lunghezza (riduce padding)
+  use_balanced_sampling: true          # Set to true per sampling bilanciato tra diverse lunghezze (migliora diversità)
   
   # ─────────────────────────────────────────────────────────
   # Gumbel-Softmax
@@ -36,9 +38,9 @@ training:
   # ─────────────────────────────────────────────────────────
   # GAN/RL Mixing
   # ─────────────────────────────────────────────────────────
-  lambda_start: 1.0                   # 0.6→1.0: PURE GAN per primi 50 epochs
+  lambda_start: 0.6                   # 0.6→1.0: PURE GAN per primi 50 epochs
   lambda_end: 0.2                     
-  lambda_decay_start: 50              
+  lambda_decay_start: 10              
   
   # ─────────────────────────────────────────────────────────
   # Early Stopping
@@ -56,15 +58,15 @@ reward:
   # Phase 1: Epochs 0-50 (VALIDITY FOCUS)
   weights_early:
     validity: 0.85        # Aumentato da 0.80 (fitness eliminato)
-    fitness: 0.00         # Eliminato (da note.md: "fitness non ci interessa")
-    conformance: 0.10     # Aumentato da 0.05
+    fitness: 0.10         # Eliminato (da note.md: "fitness non ci interessa")
+    conformance: 0.00     # Aumentato da 0.05
     diversity: 0.05       # Aggiunto (era 0.00)       
   
   # Phase 2: Epochs 50+ (BALANCED)
   weights_late:
     validity: 0.50        # Aumentato da 0.40 (fitness ridistribuito)
-    fitness: 0.00         # Eliminato (da note.md: "fitness non ci interessa")
-    conformance: 0.30     # Aumentato da 0.20
+    fitness: 0.30         # Eliminato (da note.md: "fitness non ci interessa")
+    conformance: 0.00     # Aumentato da 0.20
     diversity: 0.20       # Aumentato da 0.10       
   
   transition_epoch: 50    # Epoca di transizione tra early/late

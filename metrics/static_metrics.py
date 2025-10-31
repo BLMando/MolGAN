@@ -27,7 +27,7 @@ class ProcessMetrics:
             and t.count(start_activity) == 1
             and t.count(end_activity) == 1
             and start_activity not in t[1:]
-            and end_activity not in t[:-1]
+            #and end_activity not in t[:-1]
         ]
 
     @staticmethod

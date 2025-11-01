@@ -146,15 +146,13 @@ class ProcessTraceGenerator(keras.Model):
     """
     LSTM-based generator for process traces
     """
-    def __init__(self, 
+    def __init__(self,
                  num_activities,
                  noise_dim=128,
                  embedding_dim=64,
                  lstm_units=256,
                  lstm_layers=2,
                  max_trace_length=50,
-                 start_idx=1,
-                 end_idx=2,
                  name='generator'):
         """
         Parameters:
@@ -171,21 +169,15 @@ class ProcessTraceGenerator(keras.Model):
             Number of LSTM layers
         max_trace_length: int
             Maximum length of generated traces
-        start_idx: int
-            Index of START token
-        end_idx: int
-            Index of END token
         """
         super(ProcessTraceGenerator, self).__init__(name=name)
-        
+
         self.num_activities = num_activities
         self.noise_dim = noise_dim
         self.embedding_dim = embedding_dim
         self.lstm_units = lstm_units
         self.lstm_layers = lstm_layers
         self.max_trace_length = max_trace_length
-        self.start_idx = start_idx
-        self.end_idx = end_idx
         
         # Noise processing layers
         self.noise_processor = keras.Sequential([
@@ -210,7 +202,7 @@ class ProcessTraceGenerator(keras.Model):
         
         # Output projection
         self.output_projection = layers.Dense(
-            num_activities, 
+            num_activities,
             name='output_projection'
         )
     
@@ -263,13 +255,15 @@ class ProcessTraceGenerator(keras.Model):
         if noise is None:
             noise = tf.random.normal([batch_size, self.noise_dim])
         
-        # Initialize LSTM states
+        # Initialize LSTM states from noise
         states = self.initialize_state(batch_size, noise)
-        
-        # Start with START token
-        current_input = tf.fill([batch_size], self.start_idx)
-        current_input = self.embedding(current_input)  # [batch_size, embedding_dim]
-        
+
+        # Start with zero input for the first timestep
+        # The first output (position 0) will be generated from the LSTM state,
+        # which is initialized from noise. The model will learn to output START
+        # at position 0 via constraint losses, not via hardcoding.
+        current_input = tf.zeros([batch_size, self.embedding_dim])
+
         outputs = []
         
         for t in range(self.max_trace_length):
@@ -596,11 +590,12 @@ class ProcessGAN:
                  temp_decay=0.99995):
         """
         Initialize Process GAN
+
+        Note: start_idx and end_idx are kept for constraint losses only.
+        The generator no longer hardcodes the START token - it learns it.
         """
         self.num_activities = num_activities
         self.max_trace_length = max_trace_length
-        self.start_idx = start_idx
-        self.end_idx = end_idx
         
         # Training hyperparameters
         self.n_critic = n_critic
@@ -617,9 +612,7 @@ class ProcessGAN:
             embedding_dim=embedding_dim,
             lstm_units=generator_lstm_units,
             lstm_layers=lstm_layers,
-            max_trace_length=max_trace_length,
-            start_idx=start_idx,
-            end_idx=end_idx
+            max_trace_length=max_trace_length
         )
         
         self.discriminator = ProcessTraceDiscriminator(

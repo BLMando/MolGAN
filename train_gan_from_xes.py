@@ -18,7 +18,7 @@ def train_gan_from_xes(xes_filepath,
                        output_dir='./output',
                        # Data parameters
                        min_trace_length=2,
-                       max_trace_length=12,
+                       max_trace_length=10,
                        min_activity_frequency=1,
                        # Model parameters
                        noise_dim=128,
@@ -28,7 +28,7 @@ def train_gan_from_xes(xes_filepath,
                        lstm_layers=2,
                        # Training parameters
                        batch_size=32,
-                       epochs=100,
+                       epochs=200,
                        learning_rate=0.0001,
                        n_critic=5,
                        lambda_gp=10.0,

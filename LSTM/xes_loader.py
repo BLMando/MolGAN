@@ -517,22 +517,3 @@ def load_xes_for_gan(xes_filepath,
         print("="*70)
     
     return data
-
-
-# ============================================================================
-# SAVE/LOAD PREPROCESSED DATA
-# ============================================================================
-
-def save_preprocessed_xes(data, filepath):
-    """Save preprocessed XES data to file"""
-    with open(filepath, 'wb') as f:
-        pickle.dump(data, f)
-    print(f"\n✓ Saved preprocessed data to: {filepath}")
-
-
-def load_preprocessed_xes(filepath):
-    """Load preprocessed XES data from file"""
-    with open(filepath, 'rb') as f:
-        data = pickle.load(f)
-    print(f"\n✓ Loaded preprocessed data from: {filepath}")
-    return data

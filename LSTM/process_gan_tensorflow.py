@@ -473,10 +473,17 @@ class ProcessGAN:
                 except Exception as e:
                     if verbose:
                         print(f"⚠ Warning: Failed to load checkpoint: {e}")
-                        if "Shape mismatch" in str(e):
-                            print(f"   Checkpoint is incompatible (different vocabulary size).")
-                            print(f"   Delete old checkpoints with: rm -rf {save_dir}/*")
-                        print(f"Starting from scratch...")
+                        error_msg = str(e)
+                        if "Shape mismatch" in error_msg or "Layer count mismatch" in error_msg:
+                            print(f"   ⚠ Checkpoint is incompatible with current model architecture.")
+                            print(f"   Possible reasons:")
+                            print(f"     - Different vocabulary size (number of activities changed)")
+                            print(f"     - Different model parameters (lstm_units, layers, etc.)")
+                            print(f"   ")
+                            print(f"   To start fresh, delete old checkpoints:")
+                            print(f"   PowerShell: Remove-Item -Recurse -Force {save_dir}")
+                            print(f"   Bash/Linux: rm -rf {save_dir}")
+                        print(f"\n   Starting training from scratch...")
                     start_epoch = 0
             elif verbose:
                 print(f"\nNo checkpoint found. Starting training from scratch.\n")
@@ -558,14 +565,14 @@ class ProcessGAN:
                     print(f"  {i}. {trace_str}")
                 print()
 
-            # Save checkpoint after each epoch
-            if (epoch + 1) % 10 == 0:
+            # Save checkpoint after each epoch (if save_dir provided)
+            if save_dir and (epoch + 1) % 10 == 0:
                 self.save_weights(os.path.join(save_dir, f'checkpoint_epoch_{epoch+1}'))
                 if verbose:
                     print(f"Saved checkpoint at epoch {epoch + 1}")
 
         # Save final checkpoint if not already saved
-        if epochs % 10 != 0:
+        if save_dir and epochs % 10 != 0:
             final_checkpoint = os.path.join(save_dir, f'checkpoint_epoch_{epochs}')
             self.save_weights(final_checkpoint)
             if verbose:
@@ -613,14 +620,66 @@ class ProcessGAN:
         return np.concatenate(all_traces, axis=0)
     
     def save_weights(self, filepath):
-        """Save model weights"""
-        self.generator.save_weights(filepath + '_generator.h5')
-        self.discriminator.save_weights(filepath + '_discriminator.h5')
+        """Save model weights and configuration"""
+        import json
+        
+        # Save weights
+        gen_path = filepath + '_generator.h5'
+        disc_path = filepath + '_discriminator.h5'
+        config_path = filepath + '_config.json'
+        
+        self.generator.save_weights(gen_path)
+        self.discriminator.save_weights(disc_path)
+        
+        # Save model configuration for compatibility checking
+        config = {
+            'num_activities': self.num_activities,
+            'max_trace_length': self.max_trace_length,
+            'generator_lstm_units': self.generator.lstm_units,
+            'discriminator_lstm_units': self.discriminator.num_activities,  # This should be lstm_units but not accessible
+            'temperature': float(self.temperature),
+        }
+        
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
     
     def load_weights(self, filepath):
-        """Load model weights"""
-        self.generator.load_weights(filepath + '_generator.h5')
-        self.discriminator.load_weights(filepath + '_discriminator.h5')
+        """Load model weights with compatibility check"""
+        import json
+        
+        gen_path = filepath + '_generator.h5'
+        disc_path = filepath + '_discriminator.h5'
+        config_path = filepath + '_config.json'
+        
+        # Check if files exist
+        if not os.path.exists(gen_path):
+            raise FileNotFoundError(f"Generator weights not found: {gen_path}")
+        if not os.path.exists(disc_path):
+            raise FileNotFoundError(f"Discriminator weights not found: {disc_path}")
+        
+        # Check compatibility if config exists
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                saved_config = json.load(f)
+            
+            # Verify critical parameters match
+            if saved_config.get('num_activities') != self.num_activities:
+                raise ValueError(
+                    f"Vocabulary size mismatch: "
+                    f"checkpoint has {saved_config.get('num_activities')} activities, "
+                    f"current model has {self.num_activities} activities"
+                )
+            
+            if saved_config.get('max_trace_length') != self.max_trace_length:
+                raise ValueError(
+                    f"Max trace length mismatch: "
+                    f"checkpoint has {saved_config.get('max_trace_length')}, "
+                    f"current model has {self.max_trace_length}"
+                )
+        
+        # Load weights
+        self.generator.load_weights(gen_path)
+        self.discriminator.load_weights(disc_path)
 
     def find_latest_checkpoint(self, save_dir):
         """
@@ -638,20 +697,26 @@ class ProcessGAN:
 
         # Find all generator checkpoint files
         import glob
+        import re
+        
         checkpoints = glob.glob(os.path.join(save_dir, 'checkpoint_epoch_*_generator.h5'))
 
         if not checkpoints:
             return None, 0
 
-        # Extract epoch numbers
+        # Extract epoch numbers using regex (more robust)
         epochs = []
+        pattern = r'checkpoint_epoch_(\d+)_generator\.h5'
+        
         for ckpt in checkpoints:
             try:
-                # Extract epoch number from filename
                 basename = os.path.basename(ckpt)
-                epoch_num = int(basename.split('_')[2])
-                epochs.append(epoch_num)
-            except:
+                match = re.search(pattern, basename)
+                if match:
+                    epoch_num = int(match.group(1))
+                    epochs.append(epoch_num)
+            except Exception as e:
+                # Skip this checkpoint if we can't parse it
                 continue
 
         if not epochs:

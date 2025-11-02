@@ -108,3 +108,5 @@ checkpoints/
 # Dataset files
 data/gdb9.sdf
 data/*.pkl.gz
+output/
+output_keras/

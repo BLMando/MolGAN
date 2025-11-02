@@ -10,12 +10,13 @@ import sys
 
 # Import our modules
 from xes_loader import load_xes_for_gan, save_preprocessed_xes
-from process_gan_tensorflow import ProcessGAN, ProcessTraceDataset
+from process_gan_tensorflow import ProcessGAN
+from dataset import ProcessTraceDataset
 from evaluation import evaluate_generated_traces, plot_trace_length_comparison
 
 
 def train_gan_from_xes(xes_filepath,
-                       output_dir='./output',
+                       output_dir='../output',
                        # Data parameters
                        min_trace_length=2,
                        max_trace_length=10,
@@ -381,7 +382,7 @@ if __name__ == "__main__":
     
     
     # Optional arguments
-    parser.add_argument('--output-dir', type=str, default='./output',
+    parser.add_argument('--output-dir', type=str, default='../output',
                        help='Output directory for results')
     parser.add_argument('--min-trace-length', type=int, default=2,
                        help='Minimum trace length')
@@ -400,7 +401,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    xes_file = 'data/helpdesk_parsed.xes'
+    xes_file = '../data/helpdesk_parsed.xes'
     # Check if XES file exists
     if not os.path.exists(xes_file):
         print(f"Error: XES file not found: {xes_file}")

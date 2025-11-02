@@ -5,9 +5,8 @@ Complete pipeline for loading and preprocessing XES event logs
 
 import pandas as pd
 import numpy as np
-from collections import Counter, defaultdict
+from collections import Counter
 import pickle
-import os
 
 
 # ============================================================================
@@ -537,12 +536,3 @@ def load_preprocessed_xes(filepath):
         data = pickle.load(f)
     print(f"\n✓ Loaded preprocessed data from: {filepath}")
     return data
-
-
-if __name__ == "__main__":
-    print("\nXES Loader - Usage Example")
-    print("="*70)
-    print("\nTo use this module:")
-    print("\n  from xes_loader import load_xes_for_gan")
-    print("  data = load_xes_for_gan('your_file.xes')")
-    print("\nSee train_gan_from_xes.py for complete example")

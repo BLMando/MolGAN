@@ -8,7 +8,6 @@ from collections import Counter
 from scipy.spatial.distance import jensenshannon
 from scipy.stats import wasserstein_distance
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 # ============================================================================
@@ -519,56 +518,3 @@ def plot_activity_distribution_comparison(generated_traces, real_traces,
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.show()
-
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == "__main__":
-    """
-    Example evaluation
-    """
-    
-    # Create example data
-    real_traces = [
-        ['<START>', 'A', 'B', 'C', '<END>'],
-        ['<START>', 'A', 'C', '<END>'],
-        ['<START>', 'B', 'C', '<END>'],
-        ['<START>', 'A', 'B', 'D', '<END>'],
-    ] * 10
-    
-    # Simulate generated traces (with some variations)
-    generated_traces = [
-        ['<START>', 'A', 'B', 'C', '<END>'],
-        ['<START>', 'A', 'C', '<END>'],
-        ['<START>', 'B', 'C', '<END>'],
-        ['<START>', 'A', 'D', '<END>'],  # Novel variant
-        ['<START>', 'B', 'D', 'C', '<END>'],  # Novel variant
-    ] * 8
-    
-    # Create vocabulary
-    all_activities = set()
-    for trace in real_traces + generated_traces:
-        all_activities.update(trace)
-    activity_to_idx = {act: idx for idx, act in enumerate(sorted(all_activities))}
-    idx_to_activity = {idx: act for act, idx in activity_to_idx.items()}
-    
-    # Evaluate
-    print("\nRunning comprehensive evaluation...")
-    metrics = evaluate_generated_traces(
-        generated_traces,
-        real_traces,
-        activity_to_idx,
-        idx_to_activity,
-        verbose=True
-    )
-    
-    # Visualize
-    print("\nGenerating visualizations...")
-    plot_trace_length_comparison(generated_traces, real_traces)
-    plot_activity_distribution_comparison(
-        generated_traces, real_traces,
-        activity_to_idx, idx_to_activity,
-        top_n=5
-    )

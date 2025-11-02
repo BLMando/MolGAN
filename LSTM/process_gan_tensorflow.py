@@ -10,132 +10,9 @@ from tensorflow import keras
 from tensorflow.keras import layers
 import numpy as np
 import time
-from sklearn.metrics import classification_report
 import os
-
-
-# ============================================================================
-# DATA UTILITIES
-# ============================================================================
-
-class ProcessTraceDataset:
-    """
-    Dataset handler for process traces
-    """
-    def __init__(self, traces, activity_to_idx, max_length, 
-                 pad_token='<PAD>', start_token='START', end_token='6'):
-        """
-        Parameters:
-        -----------
-        traces: list of lists
-            Each inner list is a sequence of activity names
-            Example: [['Start', 'A', 'B', 'End'], ['Start', 'C', 'End'], ...]
-        activity_to_idx: dict
-            Mapping from activity name to integer index
-        max_length: int
-            Maximum trace length (for padding/truncating)
-        """
-        self.traces = traces
-        self.activity_to_idx = activity_to_idx
-        self.idx_to_activity = {v: k for k, v in activity_to_idx.items()}
-        self.max_length = max_length
-        self.num_activities = len(activity_to_idx)
-        
-        # Special token indices
-        self.pad_idx = activity_to_idx[pad_token]
-        self.start_idx = activity_to_idx[start_token]
-        self.end_idx = activity_to_idx[end_token]
-        
-        # Preprocess traces
-        self.processed_traces = self._preprocess_traces()
-        
-        # Compute activity frequencies for constraint matching
-        self.activity_frequencies = self._compute_frequencies()
-    
-    def _preprocess_traces(self):
-        """
-        Convert traces to integer sequences and pad/truncate
-        """
-        processed = []
-        for trace in self.traces:
-            # Convert to indices
-            indices = [self.activity_to_idx.get(act, self.pad_idx) for act in trace]
-            
-            # Pad or truncate
-            if len(indices) < self.max_length:
-                indices += [self.pad_idx] * (self.max_length - len(indices))
-            else:
-                indices = indices[:self.max_length]
-            
-            processed.append(indices)
-        
-        return np.array(processed, dtype=np.int32)
-    
-    def _compute_frequencies(self):
-        """
-        Compute normalized activity frequencies
-        """
-        counts = np.bincount(self.processed_traces.flatten(), 
-                            minlength=self.num_activities)
-        frequencies = counts / counts.sum()
-        return frequencies.astype(np.float32)
-    
-    def get_tf_dataset(self, batch_size, shuffle=True):
-        """
-        Create TensorFlow dataset
-        """
-        dataset = tf.data.Dataset.from_tensor_slices(self.processed_traces)
-        
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size=len(self.traces))
-        
-        dataset = dataset.batch(batch_size)
-        dataset = dataset.prefetch(tf.data.AUTOTUNE)
-        
-        return dataset
-
-
-# ============================================================================
-# GUMBEL-SOFTMAX UTILITIES
-# ============================================================================
-
-def sample_gumbel(shape, eps=1e-20):
-    """
-    Sample from Gumbel(0, 1) distribution
-    """
-    U = tf.random.uniform(shape, minval=0, maxval=1)
-    return -tf.math.log(-tf.math.log(U + eps) + eps)
-
-
-def gumbel_softmax(logits, temperature, hard=False):
-    """
-    Sample from the Gumbel-Softmax distribution
-    
-    Parameters:
-    -----------
-    logits: tf.Tensor [batch_size, num_classes]
-        Unnormalized log probabilities
-    temperature: float
-        Temperature parameter (higher = more uniform)
-    hard: bool
-        If True, return one-hot (with straight-through gradient)
-        If False, return soft probabilities
-    
-    Returns:
-    --------
-    y: tf.Tensor [batch_size, num_classes]
-        Sample from Gumbel-Softmax distribution
-    """
-    gumbel_noise = sample_gumbel(tf.shape(logits))
-    y = logits + gumbel_noise
-    y = tf.nn.softmax(y / temperature)
-    
-    if hard:
-        # Straight-through estimator
-        y_hard = tf.cast(tf.equal(y, tf.reduce_max(y, axis=-1, keepdims=True)), y.dtype)
-        y = tf.stop_gradient(y_hard - y) + y
-    
-    return y
+from utils import gumbel_softmax, wasserstein_loss, gradient_penalty
+from process_constraints import ProcessConstraints
 
 
 # ============================================================================
@@ -298,7 +175,6 @@ class ProcessTraceGenerator(keras.Model):
         
         return traces
 
-
 # ============================================================================
 # DISCRIMINATOR MODEL
 # ============================================================================
@@ -408,159 +284,6 @@ class ProcessTraceDiscriminator(keras.Model):
         scores = self.classifier(lstm_output, training=training)
         
         return scores
-
-
-# ============================================================================
-# LOSS FUNCTIONS
-# ============================================================================
-
-def wasserstein_loss(real_scores, fake_scores):
-    """
-    Wasserstein loss for GAN
-    """
-    return tf.reduce_mean(fake_scores) - tf.reduce_mean(real_scores)
-
-
-def gradient_penalty(discriminator, real_data, fake_data):
-    """
-    Compute gradient penalty for WGAN-GP
-    
-    Parameters:
-    -----------
-    discriminator: ProcessTraceDiscriminator
-        Discriminator model
-    real_data: tf.Tensor [batch_size, max_length, num_activities]
-        Real traces (one-hot encoded)
-    fake_data: tf.Tensor [batch_size, max_length, num_activities]
-        Fake traces (soft probabilities)
-    
-    Returns:
-    --------
-    penalty: tf.Tensor scalar
-        Gradient penalty value
-    """
-    batch_size = tf.shape(real_data)[0]
-    
-    # Random interpolation coefficient
-    alpha = tf.random.uniform([batch_size, 1, 1], 0.0, 1.0)
-    
-    # Interpolate between real and fake data
-    interpolated = alpha * real_data + (1 - alpha) * fake_data
-    
-    # Compute discriminator output for interpolated data
-    with tf.GradientTape() as tape:
-        tape.watch(interpolated)
-        scores = discriminator(interpolated, is_discrete=False, training=True)
-    
-    # Compute gradients
-    gradients = tape.gradient(scores, interpolated)
-    
-    # Compute gradient penalty
-    gradients = tf.reshape(gradients, [batch_size, -1])
-    gradient_norm = tf.sqrt(tf.reduce_sum(tf.square(gradients), axis=1))
-    penalty = tf.reduce_mean(tf.square(gradient_norm - 1.0))
-    
-    return penalty
-
-
-# ============================================================================
-# PROCESS CONSTRAINTS
-# ============================================================================
-
-class ProcessConstraints:
-    """
-    Enforce process mining-specific constraints
-    """
-    def __init__(self, start_idx, end_idx, activity_frequencies):
-        """
-        Parameters:
-        -----------
-        start_idx: int
-            Index of START activity
-        end_idx: int
-            Index of END activity
-        activity_frequencies: np.array [num_activities]
-            Normalized frequency of each activity in real data
-        """
-        self.start_idx = start_idx
-        self.end_idx = end_idx
-        self.activity_frequencies = tf.constant(activity_frequencies, dtype=tf.float32)
-    
-    def start_constraint_loss(self, generated_traces):
-        """
-        Penalize traces that don't start with START token
-        
-        Parameters:
-        -----------
-        generated_traces: tf.Tensor [batch_size, max_length, num_activities]
-        
-        Returns:
-        --------
-        loss: tf.Tensor scalar
-        """
-        # Get first activity distribution
-        first_activity = generated_traces[:, 0, :]  # [batch_size, num_activities]
-        
-        # Loss: negative log probability of START token
-        start_prob = first_activity[:, self.start_idx]
-        loss = tf.reduce_mean(-tf.math.log(start_prob + 1e-10))
-        
-        return loss
-    
-    def end_constraint_loss(self, generated_traces):
-        """
-        Encourage traces to have END token
-        
-        Parameters:
-        -----------
-        generated_traces: tf.Tensor [batch_size, max_length, num_activities]
-        
-        Returns:
-        --------
-        loss: tf.Tensor scalar
-        """
-        # Get END token probabilities across all positions
-        end_probs = generated_traces[:, :, self.end_idx]  # [batch_size, max_length]
-        
-        # Get maximum END probability for each trace
-        max_end_prob = tf.reduce_max(end_probs, axis=1)  # [batch_size]
-        
-        # Loss: encourage END token to appear
-        loss = tf.reduce_mean(1.0 - max_end_prob)
-        
-        return loss
-    
-    def frequency_matching_loss(self, generated_traces):
-        """
-        Match activity frequency distribution
-        
-        Parameters:
-        -----------
-        generated_traces: tf.Tensor [batch_size, max_length, num_activities]
-        
-        Returns:
-        --------
-        loss: tf.Tensor scalar
-        """
-        # Compute generated frequency distribution
-        gen_freq = tf.reduce_sum(generated_traces, axis=[0, 1])  # [num_activities]
-        gen_freq = gen_freq / tf.reduce_sum(gen_freq)
-        
-        # L1 distance between distributions
-        loss = tf.reduce_mean(tf.abs(gen_freq - self.activity_frequencies))
-        
-        return loss
-    
-    def total_constraint_loss(self, generated_traces):
-        """
-        Compute total constraint loss
-        """
-        start_loss = self.start_constraint_loss(generated_traces)
-        end_loss = self.end_constraint_loss(generated_traces)
-        freq_loss = self.frequency_matching_loss(generated_traces)
-        
-        return start_loss + end_loss + 0.5 * freq_loss
-
 
 # ============================================================================
 # PROCESS GAN CLASS
@@ -750,10 +473,17 @@ class ProcessGAN:
                 except Exception as e:
                     if verbose:
                         print(f"⚠ Warning: Failed to load checkpoint: {e}")
-                        if "Shape mismatch" in str(e):
-                            print(f"   Checkpoint is incompatible (different vocabulary size).")
-                            print(f"   Delete old checkpoints with: rm -rf {save_dir}/*")
-                        print(f"Starting from scratch...")
+                        error_msg = str(e)
+                        if "Shape mismatch" in error_msg or "Layer count mismatch" in error_msg:
+                            print(f"   ⚠ Checkpoint is incompatible with current model architecture.")
+                            print(f"   Possible reasons:")
+                            print(f"     - Different vocabulary size (number of activities changed)")
+                            print(f"     - Different model parameters (lstm_units, layers, etc.)")
+                            print(f"   ")
+                            print(f"   To start fresh, delete old checkpoints:")
+                            print(f"   PowerShell: Remove-Item -Recurse -Force {save_dir}")
+                            print(f"   Bash/Linux: rm -rf {save_dir}")
+                        print(f"\n   Starting training from scratch...")
                     start_epoch = 0
             elif verbose:
                 print(f"\nNo checkpoint found. Starting training from scratch.\n")
@@ -835,14 +565,14 @@ class ProcessGAN:
                     print(f"  {i}. {trace_str}")
                 print()
 
-            # Save checkpoint after each epoch
-            if (epoch + 1) % 10 == 0:
+            # Save checkpoint after each epoch (if save_dir provided)
+            if save_dir and (epoch + 1) % 10 == 0:
                 self.save_weights(os.path.join(save_dir, f'checkpoint_epoch_{epoch+1}'))
                 if verbose:
                     print(f"Saved checkpoint at epoch {epoch + 1}")
 
         # Save final checkpoint if not already saved
-        if epochs % 10 != 0:
+        if save_dir and epochs % 10 != 0:
             final_checkpoint = os.path.join(save_dir, f'checkpoint_epoch_{epochs}')
             self.save_weights(final_checkpoint)
             if verbose:
@@ -890,14 +620,66 @@ class ProcessGAN:
         return np.concatenate(all_traces, axis=0)
     
     def save_weights(self, filepath):
-        """Save model weights"""
-        self.generator.save_weights(filepath + '_generator.h5')
-        self.discriminator.save_weights(filepath + '_discriminator.h5')
+        """Save model weights and configuration"""
+        import json
+        
+        # Save weights
+        gen_path = filepath + '_generator.h5'
+        disc_path = filepath + '_discriminator.h5'
+        config_path = filepath + '_config.json'
+        
+        self.generator.save_weights(gen_path)
+        self.discriminator.save_weights(disc_path)
+        
+        # Save model configuration for compatibility checking
+        config = {
+            'num_activities': self.num_activities,
+            'max_trace_length': self.max_trace_length,
+            'generator_lstm_units': self.generator.lstm_units,
+            'discriminator_lstm_units': self.discriminator.num_activities,  # This should be lstm_units but not accessible
+            'temperature': float(self.temperature),
+        }
+        
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
     
     def load_weights(self, filepath):
-        """Load model weights"""
-        self.generator.load_weights(filepath + '_generator.h5')
-        self.discriminator.load_weights(filepath + '_discriminator.h5')
+        """Load model weights with compatibility check"""
+        import json
+        
+        gen_path = filepath + '_generator.h5'
+        disc_path = filepath + '_discriminator.h5'
+        config_path = filepath + '_config.json'
+        
+        # Check if files exist
+        if not os.path.exists(gen_path):
+            raise FileNotFoundError(f"Generator weights not found: {gen_path}")
+        if not os.path.exists(disc_path):
+            raise FileNotFoundError(f"Discriminator weights not found: {disc_path}")
+        
+        # Check compatibility if config exists
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                saved_config = json.load(f)
+            
+            # Verify critical parameters match
+            if saved_config.get('num_activities') != self.num_activities:
+                raise ValueError(
+                    f"Vocabulary size mismatch: "
+                    f"checkpoint has {saved_config.get('num_activities')} activities, "
+                    f"current model has {self.num_activities} activities"
+                )
+            
+            if saved_config.get('max_trace_length') != self.max_trace_length:
+                raise ValueError(
+                    f"Max trace length mismatch: "
+                    f"checkpoint has {saved_config.get('max_trace_length')}, "
+                    f"current model has {self.max_trace_length}"
+                )
+        
+        # Load weights
+        self.generator.load_weights(gen_path)
+        self.discriminator.load_weights(disc_path)
 
     def find_latest_checkpoint(self, save_dir):
         """
@@ -915,20 +697,26 @@ class ProcessGAN:
 
         # Find all generator checkpoint files
         import glob
+        import re
+        
         checkpoints = glob.glob(os.path.join(save_dir, 'checkpoint_epoch_*_generator.h5'))
 
         if not checkpoints:
             return None, 0
 
-        # Extract epoch numbers
+        # Extract epoch numbers using regex (more robust)
         epochs = []
+        pattern = r'checkpoint_epoch_(\d+)_generator\.h5'
+        
         for ckpt in checkpoints:
             try:
-                # Extract epoch number from filename
                 basename = os.path.basename(ckpt)
-                epoch_num = int(basename.split('_')[2])
-                epochs.append(epoch_num)
-            except:
+                match = re.search(pattern, basename)
+                if match:
+                    epoch_num = int(match.group(1))
+                    epochs.append(epoch_num)
+            except Exception as e:
+                # Skip this checkpoint if we can't parse it
                 continue
 
         if not epochs:
@@ -940,72 +728,3 @@ class ProcessGAN:
 
         return checkpoint_path, latest_epoch
 
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == "__main__":
-    """
-    Example usage of the Process GAN
-    """
-    
-    # Example: Create dummy data
-    print("Creating example dataset...")
-    
-    # Define activities
-    activities = ['<PAD>', '<START>', '<END>', 'A', 'B', 'C', 'D', 'E']
-    activity_to_idx = {act: idx for idx, act in enumerate(activities)}
-    
-    # Create some example traces
-    example_traces = [
-        ['<START>', 'A', 'B', 'C', '<END>'],
-        ['<START>', 'A', 'C', 'D', '<END>'],
-        ['<START>', 'B', 'C', '<END>'],
-        ['<START>', 'A', 'B', 'D', 'E', '<END>'],
-    ] * 100  # Repeat for more training data
-    
-    # Create dataset
-    trace_dataset = ProcessTraceDataset(
-        traces=example_traces,
-        activity_to_idx=activity_to_idx,
-        max_length=10
-    )
-    
-    tf_dataset = trace_dataset.get_tf_dataset(batch_size=32, shuffle=True)
-    
-    # Initialize GAN
-    print("\nInitializing GAN...")
-    gan = ProcessGAN(
-        num_activities=len(activities),
-        max_trace_length=10,
-        start_idx=activity_to_idx['START'],
-        end_idx=activity_to_idx['6'],
-        activity_frequencies=trace_dataset.activity_frequencies,
-        noise_dim=64,
-        embedding_dim=32,
-        generator_lstm_units=128,
-        discriminator_lstm_units=128,
-        lstm_layers=2
-    )
-    
-    # Train
-    print("\nTraining GAN...")
-    gan.train(
-        dataset=tf_dataset,
-        epochs=10,
-        eval_every=50,
-        save_dir='./checkpoints',
-        verbose=True
-    )
-    
-    # Generate synthetic traces
-    print("\nGenerating synthetic traces...")
-    synthetic_traces = gan.generate_traces(num_samples=100, temperature=0.5)
-    
-    print(f"\nGenerated {len(synthetic_traces)} synthetic traces")
-    print("Example traces:")
-    idx_to_activity = trace_dataset.idx_to_activity
-    for i in range(min(5, len(synthetic_traces))):
-        trace_str = ' -> '.join([idx_to_activity[idx] for idx in synthetic_traces[i]])
-        print(f"  {trace_str}")

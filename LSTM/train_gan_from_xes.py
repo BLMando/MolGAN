@@ -10,12 +10,13 @@ import sys
 
 # Import our modules
 from xes_loader import load_xes_for_gan, save_preprocessed_xes
-from process_gan_tensorflow import ProcessGAN, ProcessTraceDataset
+from process_gan_tensorflow import ProcessGAN
+from dataset import ProcessTraceDataset
 from evaluation import evaluate_generated_traces, plot_trace_length_comparison
 
 
 def train_gan_from_xes(xes_filepath,
-                       output_dir='./output',
+                       output_dir='../output',
                        # Data parameters
                        min_trace_length=2,
                        max_trace_length=10,
@@ -59,8 +60,13 @@ def train_gan_from_xes(xes_filepath,
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
-    checkpoints_dir = os.path.join(output_dir, 'checkpoints')
-    os.makedirs(checkpoints_dir, exist_ok=True)
+    
+    # Create checkpoints directory only if needed
+    if save_checkpoints:
+        checkpoints_dir = os.path.join(output_dir, 'checkpoints')
+        os.makedirs(checkpoints_dir, exist_ok=True)
+    else:
+        checkpoints_dir = None
     
     if verbose:
         print("\n" + "="*80)
@@ -87,11 +93,7 @@ def train_gan_from_xes(xes_filepath,
         test_ratio=0.15,
         verbose=verbose
     )
-    
-    # Save preprocessed data
-    preprocessed_path = os.path.join(output_dir, 'preprocessed_data.pkl')
-    save_preprocessed_xes(data, preprocessed_path)
-    
+       
     # ========================================================================
     # STEP 2: CREATE TENSORFLOW DATASET
     # ========================================================================
@@ -182,7 +184,7 @@ def train_gan_from_xes(xes_filepath,
         dataset=tf_train_dataset,
         epochs=epochs,
         eval_every=eval_every,
-        save_dir=checkpoints_dir if save_checkpoints else None,
+        save_dir=checkpoints_dir,
         verbose=verbose,
         idx_to_activity=data['idx_to_activity'],
         num_preview_traces=5
@@ -294,11 +296,20 @@ def train_gan_from_xes(xes_filepath,
                 })
                 timestamp += pd.Timedelta(hours=1)
     
+    if len(synthetic_event_log) == 0:
+        if verbose:
+            print(f"⚠ Warning: No valid activities in generated traces (all PAD/UNK tokens)")
+            print(f"  This can happen with very short training (1 epoch). Consider:")
+            print(f"  - Training for more epochs (--epochs 50 or more)")
+            print(f"  - Checking that the XES file contains valid activities")
+    
     synthetic_df = pd.DataFrame(synthetic_event_log)
     csv_path = os.path.join(output_dir, 'synthetic_event_log.csv')
     synthetic_df.to_csv(csv_path, index=False)
     if verbose:
         print(f"✓ Saved event log CSV: {csv_path}")
+        if len(synthetic_event_log) > 0:
+            print(f"  (Contains {len(synthetic_event_log)} events from {len(synthetic_traces)} traces)")
     
     # Save evaluation metrics
     metrics_path = os.path.join(output_dir, 'evaluation_metrics.txt')
@@ -341,7 +352,6 @@ def train_gan_from_xes(xes_filepath,
         print(f"  - Overall quality score: {metrics['overall_score']:.3f} (lower is better)")
         
         print(f"\nFiles created:")
-        print(f"  - {preprocessed_path}")
         print(f"  - {synthetic_traces_path}")
         print(f"  - {csv_path}")
         print(f"  - {metrics_path}")
@@ -381,7 +391,7 @@ if __name__ == "__main__":
     
     
     # Optional arguments
-    parser.add_argument('--output-dir', type=str, default='./output',
+    parser.add_argument('--output-dir', type=str, default='../output',
                        help='Output directory for results')
     parser.add_argument('--min-trace-length', type=int, default=2,
                        help='Minimum trace length')
@@ -400,7 +410,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    xes_file = 'data/helpdesk_parsed.xes'
+    xes_file = '../data/helpdesk_parsed.xes'
     # Check if XES file exists
     if not os.path.exists(xes_file):
         print(f"Error: XES file not found: {xes_file}")

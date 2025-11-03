@@ -222,9 +222,9 @@ def train_gan_keras_style(xes_filepath,
     # )
     
     # 8. TensorBoard (visualization)
-    # callbacks.append(
-    #     callback_factory.tensorboard()
-    # )
+    callbacks.append(
+        callback_factory.tensorboard()
+    )
 
 
     if verbose:

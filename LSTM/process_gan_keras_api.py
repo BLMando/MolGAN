@@ -159,13 +159,16 @@ class ProcessTraceDiscriminator(keras.Model):
             )
 
         self.classifier = keras.Sequential([
-            layers.Dense(lstm_units, name='fc1'),
+            layers.Dense(lstm_units, name='fc1', 
+                        kernel_constraint=tf.keras.constraints.MaxNorm(1.0)),
             layers.LeakyReLU(0.2),
             layers.Dropout(dropout_rate),
-            layers.Dense(lstm_units // 2, name='fc2'),
+            layers.Dense(lstm_units // 2, name='fc2',
+                        kernel_constraint=tf.keras.constraints.MaxNorm(1.0)),
             layers.LeakyReLU(0.2),
             layers.Dropout(dropout_rate),
-            layers.Dense(1, name='output')
+            layers.Dense(1, name='output',
+                        kernel_constraint=tf.keras.constraints.MaxNorm(1.0))
         ], name='classifier')
 
     def call(self, traces, is_discrete=False, training=True):
@@ -260,8 +263,16 @@ class ProcessGAN(keras.Model):
             Optimizer for generator
         """
         super().compile()
-        self.d_optimizer = d_optimizer
-        self.g_optimizer = g_optimizer
+        
+        # Add gradient clipping to prevent exploding gradients
+        self.d_optimizer = tf.keras.optimizers.experimental.enable_gradient_clipping(
+            d_optimizer, 
+            clipnorm=1.0  # Clip gradients with norm > 1.0
+        )
+        self.g_optimizer = tf.keras.optimizers.experimental.enable_gradient_clipping(
+            g_optimizer, 
+            clipnorm=1.0
+        )
 
     @property
     def metrics(self):

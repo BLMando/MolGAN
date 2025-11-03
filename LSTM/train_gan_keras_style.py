@@ -50,7 +50,7 @@ def train_gan_keras_style(xes_filepath,
 
     if verbose:
         print("\n" + "="*80)
-        print(" KERAS API TRAINING - PROCESS MINING GAN ")
+        print("PROCESS MINING GAN ")
         print("="*80)
 
     # ========================================================================
@@ -139,6 +139,9 @@ def train_gan_keras_style(xes_filepath,
     # ========================================================================
     if verbose:
         print("\nCompiling model...")
+        print(f"  Learning rate: {learning_rate}")
+        print(f"  Discriminator updates per generator update: {n_critic}")
+        print(f"  Gradient penalty weight: {lambda_gp}")
 
     gan.compile(
         d_optimizer=tf.keras.optimizers.Adam(
@@ -315,6 +318,10 @@ if __name__ == "__main__":
                         help='Number of training epochs')
     parser.add_argument('--lstm-units', type=int, default=256,
                         help='LSTM hidden units')
+    parser.add_argument('--learning-rate', type=float, default=0.0001,
+                        help='Learning rate for both optimizers')
+    parser.add_argument('--n-critic', type=int, default=3,
+                        help='Discriminator updates per generator update (lower = more balanced)')
     parser.add_argument('--no-validation', action='store_true',
                         help='Disable validation during training')
     parser.add_argument('--no-verbose', action='store_true',
@@ -337,6 +344,8 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         batch_size=args.batch_size,
         epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        n_critic=args.n_critic,
         generator_lstm_units=args.lstm_units,
         discriminator_lstm_units=args.lstm_units,
         use_validation=not args.no_validation,

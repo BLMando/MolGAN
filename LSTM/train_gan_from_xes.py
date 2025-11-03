@@ -9,7 +9,7 @@ import os
 import sys
 
 # Import our modules
-from xes_loader import load_xes_for_gan, save_preprocessed_xes
+from xes_loader import load_xes_for_gan
 from process_gan_tensorflow import ProcessGAN
 from dataset import ProcessTraceDataset
 from evaluation import evaluate_generated_traces, plot_trace_length_comparison

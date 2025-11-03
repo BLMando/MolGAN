@@ -30,6 +30,8 @@ dependencies:
   - tqdm>=4.65
   - pyyaml>=6.0
 
+  - tensorboard>=2.20.0
+
   # Pip packages (Process Mining specific)
   - pip:
     - pm4py>=2.7.11           # Process mining toolkit

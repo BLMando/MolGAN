@@ -222,9 +222,10 @@ def train_gan_keras_style(xes_filepath,
     # )
     
     # 8. TensorBoard (visualization)
-    # callbacks.append(
-    #     callback_factory.tensorboard()
-    # )
+    # usage tensorboard --logdir=..\output_keras\tensorboard_logs
+    callbacks.append(
+        callback_factory.tensorboard()
+    )
 
 
     if verbose:

@@ -104,10 +104,10 @@ venv.bak/
 .mypy_cache/
 
 checkpoints/
+backup/
 output/
 
 # Dataset files
 data/gdb9.sdf
 data/*.pkl.gz
 output/
-output_keras/

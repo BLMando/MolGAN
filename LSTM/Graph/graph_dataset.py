@@ -1,0 +1,393 @@
+"""
+Graph Dataset - Convert instance graphs to adjacency matrices and node features
+
+Handles:
+- Adjacency matrix construction with multiple edge types
+- Automatic parallelism detection (AND-split/AND-join)
+- Node feature matrices
+- Padding for variable-length graphs
+"""
+
+import numpy as np
+import tensorflow as tf
+from typing import List, Dict, Tuple
+from datetime import datetime
+
+
+def log(msg: str):
+    """Print timestamped log message"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f'[{timestamp}] {msg}')
+
+
+class EdgeTypeClassifier:
+    """
+    Classify edge types from graph structure
+
+    Edge types:
+    - SEQUENCE: normal sequential flow
+    - AND_SPLIT: parallel split (multiple outgoing edges)
+    - AND_JOIN: parallel join (multiple incoming edges)
+    - LOOP: back edge
+    - XOR: choice (can be inferred from patterns)
+    """
+
+    def __init__(self):
+        self.edge_types = {
+            'SEQUENCE': 0,
+            'AND_SPLIT': 1,
+            'AND_JOIN': 2,
+            'LOOP': 3,
+            'XOR': 4
+        }
+        self.num_types = len(self.edge_types)
+
+    def classify_edges(self, edges: List[Dict]) -> Dict:
+        """
+        Classify all edges in a trace
+
+        Args:
+            edges: List of edge dicts with 'source' and 'target'
+
+        Returns:
+            Dict mapping (source, target) -> edge_type_idx
+        """
+        edge_classification = {}
+
+        # Group by source (for AND-split detection)
+        outgoing = {}
+        for edge in edges:
+            src = edge['source']
+            if src not in outgoing:
+                outgoing[src] = []
+            outgoing[src].append(edge)
+
+        # Group by target (for AND-join detection)
+        incoming = {}
+        for edge in edges:
+            tgt = edge['target']
+            if tgt not in incoming:
+                incoming[tgt] = []
+            incoming[tgt].append(edge)
+
+        # Classify each edge
+        for edge in edges:
+            src = edge['source']
+            tgt = edge['target']
+            key = (src, tgt)
+
+            # Check for loop (back edge)
+            if tgt < src:
+                edge_classification[key] = self.edge_types['LOOP']
+
+            # Check for AND-split (multiple outgoing)
+            elif len(outgoing[src]) > 1:
+                edge_classification[key] = self.edge_types['AND_SPLIT']
+
+            # Check for AND-join (multiple incoming)
+            elif len(incoming[tgt]) > 1:
+                edge_classification[key] = self.edge_types['AND_JOIN']
+
+            # Default: SEQUENCE
+            else:
+                edge_classification[key] = self.edge_types['SEQUENCE']
+
+        return edge_classification
+
+
+class GraphDataset:
+    """
+    Convert instance graphs to matrices for GAN training
+    """
+
+    def __init__(self,
+                 traces: List[Dict],
+                 activity_to_idx: Dict[str, int],
+                 max_nodes: int,
+                 include_features: bool = True,
+                 verbose: bool = True):
+        """
+        Args:
+            traces: List of parsed traces from ig_loader
+            activity_to_idx: Activity vocabulary mapping
+            max_nodes: Maximum number of nodes per graph
+            include_features: Whether to include temporal features
+            verbose: Print progress
+        """
+        self.traces = traces
+        self.activity_to_idx = activity_to_idx
+        self.idx_to_activity = {v: k for k, v in activity_to_idx.items()}
+        self.max_nodes = max_nodes
+        self.include_features = include_features
+        self.verbose = verbose
+        self.num_activities = len(activity_to_idx)
+
+        # Edge type classifier
+        self.edge_classifier = EdgeTypeClassifier()
+        self.num_edge_types = self.edge_classifier.num_types
+
+        # Preprocess all traces
+        self.adjacency_matrices = []
+        self.node_matrices = []
+        self.feature_matrices = [] if include_features else None
+
+        self._preprocess_traces()
+
+    def _preprocess_traces(self):
+        """Convert all traces to matrices"""
+        if self.verbose:
+            log(f'Converting {len(self.traces)} traces to matrices...')
+
+        for i, trace in enumerate(self.traces):
+            # Build node ID to index mapping
+            vertices = trace['vertices']
+            node_id_to_idx = {v['node_id']
+                : idx for idx, v in enumerate(vertices)}
+
+            # Build adjacency matrix
+            adj_matrix = self._build_adjacency(trace, node_id_to_idx)
+            self.adjacency_matrices.append(adj_matrix)
+
+            # Build node matrix (one-hot activities)
+            node_matrix = self._build_nodes(trace)
+            self.node_matrices.append(node_matrix)
+
+            # Build feature matrix (optional)
+            if self.include_features:
+                feature_matrix = self._build_features(trace)
+                self.feature_matrices.append(feature_matrix)
+
+            if self.verbose and (i + 1) % 1000 == 0:
+                log(f'  Processed {i + 1}/{len(self.traces)} traces')
+
+        # Convert to numpy arrays
+        self.adjacency_matrices = np.array(
+            self.adjacency_matrices, dtype=np.float32)
+        self.node_matrices = np.array(self.node_matrices, dtype=np.float32)
+        if self.include_features:
+            self.feature_matrices = np.array(
+                self.feature_matrices, dtype=np.float32)
+
+        if self.verbose:
+            log(f'Adjacency matrices shape: {self.adjacency_matrices.shape}')
+            log(f'Node matrices shape: {self.node_matrices.shape}')
+            if self.include_features:
+                log(f'Feature matrices shape: {self.feature_matrices.shape}')
+
+    def _build_adjacency(self, trace: Dict, node_id_to_idx: Dict) -> np.ndarray:
+        """
+        Build multi-channel adjacency matrix
+
+        Returns:
+            Adjacency matrix of shape (max_nodes, max_nodes, num_edge_types)
+        """
+        adj = np.zeros((self.max_nodes, self.max_nodes,
+                       self.num_edge_types), dtype=np.float32)
+
+        # Classify all edges
+        edges = trace['edges']
+        edge_classifications = self.edge_classifier.classify_edges(edges)
+
+        # Fill adjacency matrix
+        for edge in edges:
+            src_id = edge['source']
+            tgt_id = edge['target']
+
+            # Map to indices
+            if src_id not in node_id_to_idx or tgt_id not in node_id_to_idx:
+                continue
+
+            src_idx = node_id_to_idx[src_id]
+            tgt_idx = node_id_to_idx[tgt_id]
+
+            # Get edge type
+            edge_type = edge_classifications.get((src_id, tgt_id),
+                                                 self.edge_classifier.edge_types['SEQUENCE'])
+
+            # Set adjacency
+            if src_idx < self.max_nodes and tgt_idx < self.max_nodes:
+                adj[src_idx, tgt_idx, edge_type] = 1.0
+
+        return adj
+
+    def _build_nodes(self, trace: Dict) -> np.ndarray:
+        """
+        Build node matrix (one-hot encoded activities)
+
+        Returns:
+            Node matrix of shape (max_nodes, num_activities)
+        """
+        nodes = np.zeros(
+            (self.max_nodes, self.num_activities), dtype=np.float32)
+
+        vertices = trace['vertices']
+        for idx, vertex in enumerate(vertices):
+            if idx >= self.max_nodes:
+                break
+
+            activity = vertex['activity']
+            activity_idx = self.activity_to_idx.get(activity, 0)  # 0 = <PAD>
+            nodes[idx, activity_idx] = 1.0
+
+        return nodes
+
+    def _build_features(self, trace: Dict) -> np.ndarray:
+        """
+        Build feature matrix (temporal features already normalized in .g file)
+
+        Returns:
+            Feature matrix of shape (max_nodes, num_features)
+            Features: [norm_time, trace_time, prev_event_time]
+        """
+        num_features = 3
+        features = np.zeros((self.max_nodes, num_features), dtype=np.float32)
+
+        vertices = trace['vertices']
+        for idx, vertex in enumerate(vertices):
+            if idx >= self.max_nodes:
+                break
+
+            features[idx, 0] = vertex['norm_time']
+            features[idx, 1] = vertex['trace_time']
+            features[idx, 2] = vertex['prev_event_time']
+
+        return features
+
+    def get_tf_dataset(self, batch_size: int, shuffle: bool = True) -> tf.data.Dataset:
+        """
+        Create TensorFlow dataset
+
+        Args:
+            batch_size: Batch size
+            shuffle: Whether to shuffle
+
+        Returns:
+            tf.data.Dataset yielding (adjacency, nodes) or (adjacency, nodes, features)
+        """
+        if self.include_features:
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (self.adjacency_matrices, self.node_matrices, self.feature_matrices)
+            )
+        else:
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (self.adjacency_matrices, self.node_matrices)
+            )
+
+        if shuffle:
+            dataset = dataset.shuffle(buffer_size=len(self.traces))
+
+        dataset = dataset.batch(batch_size)
+        dataset = dataset.prefetch(tf.data.AUTOTUNE)
+
+        return dataset
+
+    def compute_activity_frequencies(self) -> np.ndarray:
+        """
+        Compute normalized activity frequencies across all traces
+
+        Returns:
+            Array of shape (num_activities,) with frequencies
+        """
+        # Sum across all nodes and traces
+        activity_counts = np.sum(self.node_matrices, axis=(0, 1))
+
+        # Normalize
+        activity_frequencies = activity_counts / np.sum(activity_counts)
+
+        return activity_frequencies.astype(np.float32)
+
+    def print_example(self, idx: int = 0):
+        """Print example graph matrices"""
+        if idx >= len(self.traces):
+            print(f'Index {idx} out of range')
+            return
+
+        trace = self.traces[idx]
+        adj = self.adjacency_matrices[idx]
+        nodes = self.node_matrices[idx]
+
+        print('\n' + '='*80)
+        print(f'EXAMPLE GRAPH MATRICES (Case ID: {trace["case_id"]})')
+        print('='*80)
+
+        print('\nOriginal trace:')
+        for v in trace['vertices']:
+            print(f"  Node {v['node_id']}: {v['activity']}")
+
+        print('\nNode matrix (activities):')
+        for i in range(min(len(trace['vertices']), self.max_nodes)):
+            activity_idx = np.argmax(nodes[i])
+            activity = self.idx_to_activity[activity_idx]
+            print(f"  Position {i}: {activity}")
+
+        print('\nAdjacency matrix (non-zero edges):')
+        for i in range(self.max_nodes):
+            for j in range(self.max_nodes):
+                for k in range(self.num_edge_types):
+                    if adj[i, j, k] > 0:
+                        edge_type = list(
+                            self.edge_classifier.edge_types.keys())[k]
+                        print(f"  {i} -> {j} (type: {edge_type})")
+
+        if self.include_features and self.feature_matrices is not None:
+            features = self.feature_matrices[idx]
+            print('\nTemporal features:')
+            for i in range(min(len(trace['vertices']), 5)):
+                print(f"  Node {i}: norm_time={features[i, 0]:.4f}, "
+                      f"trace_time={features[i, 1]:.4f}, prev_time={features[i, 2]:.4f}")
+
+        print('='*80 + '\n')
+
+    def get_statistics(self) -> Dict:
+        """Get dataset statistics"""
+        # Count edge types
+        edge_type_counts = {}
+        for edge_type, idx in self.edge_classifier.edge_types.items():
+            count = np.sum(self.adjacency_matrices[:, :, :, idx])
+            edge_type_counts[edge_type] = int(count)
+
+        # Activity frequencies
+        activity_freqs = self.compute_activity_frequencies()
+
+        stats = {
+            'num_traces': len(self.traces),
+            'num_activities': self.num_activities,
+            'num_edge_types': self.num_edge_types,
+            'max_nodes': self.max_nodes,
+            'edge_type_counts': edge_type_counts,
+            'activity_frequencies': activity_freqs,
+            'adjacency_shape': self.adjacency_matrices.shape,
+            'nodes_shape': self.node_matrices.shape
+        }
+
+        return stats
+
+    def print_statistics(self):
+        """Print dataset statistics"""
+        stats = self.get_statistics()
+
+        print('\n' + '='*80)
+        print('GRAPH DATASET STATISTICS')
+        print('='*80)
+        print(f"Number of traces: {stats['num_traces']}")
+        print(f"Number of activities: {stats['num_activities']}")
+        print(f"Max nodes per graph: {stats['max_nodes']}")
+        print(f"Number of edge types: {stats['num_edge_types']}")
+
+        print('\nEdge type distribution:')
+        for edge_type, count in stats['edge_type_counts'].items():
+            print(f"  {edge_type}: {count}")
+
+        print('\nTop 5 activities by frequency:')
+        activity_freqs = stats['activity_frequencies']
+        top_activities = np.argsort(activity_freqs)[::-1][:5]
+        for idx in top_activities:
+            activity = self.idx_to_activity[idx]
+            freq = activity_freqs[idx]
+            print(f"  {activity}: {freq:.4f}")
+
+        print(f"\nMatrix shapes:")
+        print(f"  Adjacency: {stats['adjacency_shape']}")
+        print(f"  Nodes: {stats['nodes_shape']}")
+
+        print('='*80 + '\n')

@@ -31,7 +31,7 @@ class GraphGenerator(keras.Model):
                  num_activities,
                  noise_dim=128,
                  hidden_dims=(256, 512, 1024),
-                 dropout_rate=0.0,
+                 dropout_rate=0.1,
                  name='graph_generator'):
         """
         Args:

@@ -27,7 +27,7 @@ sys.path.append(str(Path(__file__).parent))
 class DualLearningRateScheduler(keras.callbacks.Callback):
     """Custom LR scheduler for GAN with two optimizers"""
 
-    def __init__(self, decay_rate=0.95, min_lr=1e-7, verbose=1):
+    def __init__(self, decay_rate=0.98, min_lr=1e-7, verbose=1):
         super().__init__()
         self.decay_rate = decay_rate
         self.min_lr = min_lr
@@ -51,14 +51,21 @@ class DualLearningRateScheduler(keras.callbacks.Callback):
                 f'\nEpoch {epoch}: D_LR = {new_d_lr:.2e}, G_LR = {new_g_lr:.2e}')
 
 
-def create_callbacks(checkpoint_dir, log_dir, monitor='val_d_loss', patience=20):
+def create_callbacks(
+    checkpoint_dir,
+    log_dir, 
+    monitor='val_d_loss', 
+    early_stopping_monitor='val_g_loss',
+    patience=15
+    ):
     """
     Create all important callbacks for training
 
     Args:
         checkpoint_dir: Directory for model checkpoints
         log_dir: Directory for TensorBoard logs
-        monitor: Metric to monitor for early stopping
+        monitor: Metric to monitor
+        early_stopping_monitor: Metric to monitor for early stopping
         patience: Patience for early stopping
 
     Returns:
@@ -87,7 +94,7 @@ def create_callbacks(checkpoint_dir, log_dir, monitor='val_d_loss', patience=20)
     # 2. EarlyStopping - Stop when no improvement
     # ================================================================
     early_stopping = keras.callbacks.EarlyStopping(
-        monitor=monitor,
+        monitor=early_stopping_monitor,
         patience=patience,
         mode='min',
         verbose=1,
@@ -156,10 +163,10 @@ def train_graph_gan(
     generator_hidden_dims=(256, 512, 1024),
     rgcn_hidden_dims=(128, 64),
     mlp_hidden_dims=(128, 64),
-    generator_dropout=0.0,
+    generator_dropout=0.1,
     discriminator_dropout=0.3,
     # Training hyperparameters
-    n_critic=5,
+    n_critic=3,
     lambda_gp=10.0,
     lambda_constraint=0.1,
     batch_size=32,
@@ -371,7 +378,8 @@ def train_graph_gan(
     callbacks = create_callbacks(
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
-        monitor='val_d_loss',
+        monitor='val_constraint_loss',
+        early_stopping_monitor='val_g_loss',
         patience=early_stopping_patience
     )
 
@@ -484,13 +492,13 @@ if __name__ == '__main__':
                         help='Discriminator updates per generator update')
     parser.add_argument('--lambda-gp', type=float, default=10.0,
                         help='Gradient penalty weight')
-    parser.add_argument('--lambda-constraint', type=float, default=0.1,
+    parser.add_argument('--lambda-constraint', type=float, default=0.2,
                         help='Constraint loss weight')
 
     # Optimizer
     parser.add_argument('--d-lr', type=float, default=0.0001,
                         help='Discriminator learning rate')
-    parser.add_argument('--g-lr', type=float, default=0.0001,
+    parser.add_argument('--g-lr', type=float, default=0.0002,
                         help='Generator learning rate')
 
     # Other

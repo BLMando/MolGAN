@@ -30,11 +30,11 @@ class GraphProcessConstraints:
                  activity_frequencies,
                  pad_idx=0,
                  lambda_start=1.0,
-                 lambda_end=1.0,
+                 lambda_end=3.0,
                  lambda_frequency=1.0,
                  lambda_connectivity=0.5,
-                 lambda_structure=10.0,
-                 lambda_unique=5.0):
+                 lambda_structure=20.0,
+                 lambda_unique=10.0):
         """
         Args:
             start_idx: Index of START activity

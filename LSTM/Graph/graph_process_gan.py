@@ -36,7 +36,7 @@ class GraphProcessGAN(keras.Model):
                  # Generator params
                  noise_dim=128,
                  generator_hidden_dims=(256, 512, 1024),
-                 generator_dropout=0.0,
+                 generator_dropout=0.1,
                  # Discriminator params
                  rgcn_hidden_dims=(128, 64),
                  mlp_hidden_dims=(128, 64),

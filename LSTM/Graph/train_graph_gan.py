@@ -20,8 +20,74 @@ import tensorflow as tf
 from tensorflow import keras
 from datetime import datetime
 
+def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename):
+    """
+    Save a single graph to .txt in NetworkX-readable format (adjacency matrix as edges).
+    
+    Args:
+        adj_matrix: (max_nodes, max_nodes, num_edge_types) adjacency
+        node_matrix: (max_nodes, num_activities) node labels
+        idx_to_activity: Dict for activity names
+        filename: Output .txt file path
+    """
+    max_nodes = adj_matrix.shape[0]
+    num_activities = node_matrix.shape[1]
+    
+    with open(filename, 'w') as f:
+        f.write("# Graph in NetworkX DiGraph format (adjacency matrix as edges)\n")
+        f.write("# Nodes: node_id: activity\n")
+        f.write("# Edges: Edge source target\n\n")
+        
+        # Write nodes (only non-zero activity nodes)
+        for node_id in range(max_nodes):
+            activity_probs = node_matrix[node_id]
+            if np.sum(activity_probs) > 0:  # Node exists
+                activity_idx = np.argmax(activity_probs)
+                activity = idx_to_activity.get(activity_idx, f"UNK_{activity_idx}")
+                f.write(f"Node {node_id}: {activity}\n")
+        
+        f.write("\n")
+        
+        # Write edges (from adjacency matrix, any edge type present)
+        for source in range(max_nodes):
+            for target in range(max_nodes):
+                if np.sum(adj_matrix[source, target, :]) > 0.5:  # At least one edge type present
+                    f.write(f"Edge {source} {target}\n")
+
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent))
+
+
+class SampleGraphsCallback(keras.callbacks.Callback):
+    """Callback to save sample graphs every 10 epochs"""
+    
+    def __init__(self, output_dir, idx_to_activity, num_samples=5, interval=10):
+        super().__init__()
+        self.output_dir = Path(output_dir) / 'samples'
+        self.output_dir.mkdir(exist_ok=True)
+        self.idx_to_activity = idx_to_activity
+        self.num_samples = num_samples
+        self.interval = interval
+    
+    def on_epoch_end(self, epoch, logs=None):
+        if (epoch + 1) % self.interval == 0:
+            print(f'\n🎨 Generating {self.num_samples} sample graphs at epoch {epoch + 1}...')
+            
+            # Generate samples
+            sample_adj, sample_nodes = self.model.generate_graphs(
+                num_samples=self.num_samples,
+                temperature=0.5,
+                hard=True
+            )
+            
+            # Save each sample
+            for i in range(self.num_samples):
+                adj = sample_adj[i]
+                nodes = sample_nodes[i]
+                filename = self.output_dir / f'epoch_{epoch + 1}_sample_{i}.txt'
+                save_graph_to_txt(adj, nodes, self.idx_to_activity, str(filename))
+            
+            print(f'  Saved to {self.output_dir}')
 
 
 class DualLearningRateScheduler(keras.callbacks.Callback):
@@ -169,6 +235,7 @@ def train_graph_gan(
     n_critic=3,
     lambda_gp=10.0,
     lambda_constraint=0.1,
+    lambda_degree=10.0,
     batch_size=32,
     epochs=500,
     validation_split=0.1,
@@ -182,7 +249,7 @@ def train_graph_gan(
     temp_min=0.5,
     temp_decay=0.99995,
     # Early stopping
-    early_stopping_patience=20,
+    early_stopping_patience=200,
     seed=42
 ):
     """
@@ -201,6 +268,7 @@ def train_graph_gan(
         n_critic: Discriminator updates per generator update
         lambda_gp: Gradient penalty weight
         lambda_constraint: Constraint loss weight
+        lambda_degree: Degree constraint weight
         batch_size: Training batch size
         epochs: Maximum epochs
         validation_split: Fraction of data for validation
@@ -327,6 +395,7 @@ def train_graph_gan(
         n_critic=n_critic,
         lambda_gp=lambda_gp,
         lambda_constraint=lambda_constraint,
+        lambda_degree=lambda_degree,
         temp_start=temp_start,
         temp_min=temp_min,
         temp_decay=temp_decay
@@ -382,6 +451,13 @@ def train_graph_gan(
         early_stopping_monitor='val_g_loss',
         patience=early_stopping_patience
     )
+
+    # Add sample graphs callback
+    sample_callback = SampleGraphsCallback(
+        output_dir=output_dir, 
+        idx_to_activity=vocab['idx_to_activity']
+    )
+    callbacks.append(sample_callback)
 
     print(f'  Checkpoint dir: {checkpoint_dir}')
     print(f'  Log dir: {log_dir}')

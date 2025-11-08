@@ -45,6 +45,7 @@ class GraphProcessGAN(keras.Model):
                  n_critic=5,
                  lambda_gp=10.0,
                  lambda_constraint=0.1,
+                 lambda_degree=10.0,
                  # Temperature scheduling
                  temp_start=5.0,
                  temp_min=0.5,
@@ -67,6 +68,7 @@ class GraphProcessGAN(keras.Model):
             n_critic: Number of discriminator updates per generator update
             lambda_gp: Gradient penalty coefficient
             lambda_constraint: Constraint loss coefficient
+            lambda_degree: Degree constraint coefficient
             temp_start: Initial Gumbel-Softmax temperature
             temp_min: Minimum temperature
             temp_decay: Temperature decay rate
@@ -80,6 +82,7 @@ class GraphProcessGAN(keras.Model):
         self.n_critic = n_critic
         self.lambda_gp = lambda_gp
         self.lambda_constraint = lambda_constraint
+        self.lambda_degree = lambda_degree
 
         # Temperature for Gumbel-Softmax
         self.temperature = tf.Variable(
@@ -110,7 +113,8 @@ class GraphProcessGAN(keras.Model):
         self.constraints = GraphProcessConstraints(
             start_idx=start_idx,
             end_idx=end_idx,
-            activity_frequencies=activity_frequencies
+            activity_frequencies=activity_frequencies,
+            lambda_degree=self.lambda_degree
         )
 
         # Metrics (tracked automatically by Keras)

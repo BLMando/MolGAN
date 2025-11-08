@@ -34,7 +34,8 @@ class GraphProcessConstraints:
                  lambda_frequency=1.0,
                  lambda_connectivity=0.5,
                  lambda_structure=20.0,
-                 lambda_unique=10.0):
+                 lambda_unique=10.0,
+                 lambda_degree=10.0):
         """
         Args:
             start_idx: Index of START activity
@@ -56,6 +57,7 @@ class GraphProcessConstraints:
         self.lambda_connectivity = lambda_connectivity
         self.lambda_structure = lambda_structure
         self.lambda_unique = lambda_unique
+        self.lambda_degree = lambda_degree
 
     def start_node_loss(self, nodes):
         """
@@ -146,6 +148,52 @@ class GraphProcessConstraints:
         )
 
         return kl_loss
+
+    def degree_constraint_loss(self, adjacency, nodes):
+        """
+        Strict degree constraints for process graphs:
+        - START: exactly 0 in-degree, at least 1 out-degree
+        - END: at least 1 in-degree, exactly 0 out-degree
+        - Other nodes: at least 1 in-degree and 1 out-degree
+        
+        Args:
+            adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
+            nodes: Node matrix (batch, max_nodes, num_activities)
+            
+        Returns:
+            Loss penalizing degree violations
+        """
+        # Sum over edge types
+        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
+        
+        # Compute degrees
+        in_degrees = tf.reduce_sum(total_adj, axis=-1)  # (batch, max_nodes)
+        out_degrees = tf.reduce_sum(total_adj, axis=-2)  # (batch, max_nodes)
+        
+        # Identify START and END nodes
+        start_probs = nodes[:, :, self.start_idx]  # (batch, max_nodes)
+        end_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
+        
+        # For each graph, penalize violations
+        loss = 0.0
+        
+        # START constraints: 0 in-degree, >=1 out-degree
+        start_in_penalty = tf.maximum(in_degrees * start_probs, 0.0)  # Penalize any in-degree for START
+        start_out_penalty = tf.maximum((1.0 - out_degrees) * start_probs, 0.0)  # Penalize 0 out-degree for START
+        loss += tf.reduce_mean(start_in_penalty + start_out_penalty)
+        
+        # END constraints: >=1 in-degree, 0 out-degree
+        end_in_penalty = tf.maximum((1.0 - in_degrees) * end_probs, 0.0)  # Penalize 0 in-degree for END
+        end_out_penalty = tf.maximum(out_degrees * end_probs, 0.0)  # Penalize any out-degree for END
+        loss += tf.reduce_mean(end_in_penalty + end_out_penalty)
+        
+        # Other nodes: >=1 in-degree and >=1 out-degree
+        other_mask = 1.0 - start_probs - end_probs - nodes[:, :, self.pad_idx]  # (batch, max_nodes)
+        other_in_penalty = tf.maximum((1.0 - in_degrees) * other_mask, 0.0)
+        other_out_penalty = tf.maximum((1.0 - out_degrees) * other_mask, 0.0)
+        loss += tf.reduce_mean(other_in_penalty + other_out_penalty)
+        
+        return loss
 
     def connectivity_loss(self, adjacency, nodes):
         """
@@ -253,6 +301,7 @@ class GraphProcessConstraints:
         connect_loss = self.connectivity_loss(adjacency, nodes)
         struct_loss = self.structural_validity_loss(adjacency)
         unique_loss = self.unique_start_end_loss(nodes)
+        degree_loss = self.degree_constraint_loss(adjacency, nodes)
 
         # Weighted sum
         total_loss = (
@@ -261,7 +310,8 @@ class GraphProcessConstraints:
             self.lambda_frequency * freq_loss +
             self.lambda_connectivity * connect_loss +
             self.lambda_structure * struct_loss +
-            self.lambda_unique * unique_loss
+            self.lambda_unique * unique_loss +
+            self.lambda_degree * degree_loss
         )
 
         return total_loss
@@ -284,5 +334,6 @@ class GraphProcessConstraints:
             'connectivity_loss': self.connectivity_loss(adjacency, nodes),
             'structural_loss': self.structural_validity_loss(adjacency),
             'density_loss': self.edge_density_loss(adjacency),
-            'unique_loss': self.unique_start_end_loss(nodes)
+            'unique_loss': self.unique_start_end_loss(nodes),
+            'degree_loss': self.degree_constraint_loss(adjacency, nodes)
         }

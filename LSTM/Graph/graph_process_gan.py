@@ -57,6 +57,10 @@ class GraphProcessGAN(keras.Model):
                  lambda_start_connect=20.0,
                  lambda_end_connect=20.0,
                  lambda_node_on_path=15.0,
+                 lambda_end_no_out=30.0,
+                 lambda_end_unique=30.0,
+                 lambda_start_no_in=30.0,
+                 lambda_start_unique=30.0,
                  # Temperature scheduling
                  temp_start=5.0,
                  temp_min=0.5,
@@ -90,6 +94,10 @@ class GraphProcessGAN(keras.Model):
             lambda_start_connect: START connectivity weight
             lambda_end_connect: END connectivity weight
             lambda_node_on_path: Nodes on path weight
+            lambda_end_no_out: END no outgoing edges weight (CRITICAL)
+            lambda_end_unique: END uniqueness weight (CRITICAL)
+            lambda_start_no_in: START no incoming edges weight (CRITICAL)
+            lambda_start_unique: START uniqueness weight (CRITICAL)
             temp_start: Initial Gumbel-Softmax temperature
             temp_min: Minimum temperature
             temp_decay: Temperature decay rate
@@ -144,7 +152,11 @@ class GraphProcessGAN(keras.Model):
             lambda_path=lambda_path,
             lambda_start_connect=lambda_start_connect,
             lambda_end_connect=lambda_end_connect,
-            lambda_node_on_path=lambda_node_on_path
+            lambda_node_on_path=lambda_node_on_path,
+            lambda_end_no_out=lambda_end_no_out,
+            lambda_end_unique=lambda_end_unique,
+            lambda_start_no_in=lambda_start_no_in,
+            lambda_start_unique=lambda_start_unique
         )
 
         # Metrics (tracked automatically by Keras)

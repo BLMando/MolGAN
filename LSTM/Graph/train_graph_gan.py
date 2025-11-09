@@ -234,7 +234,7 @@ def train_graph_gan(
     # Training hyperparameters
     n_critic=3,
     lambda_gp=10.0,
-    lambda_constraint=0.1,
+    lambda_constraint=0.5,
     lambda_degree=10.0,
     batch_size=32,
     epochs=500,
@@ -564,11 +564,11 @@ if __name__ == '__main__':
                         help='Batch size')
     parser.add_argument('--epochs', type=int, default=100,
                         help='Maximum epochs')
-    parser.add_argument('--n-critic', type=int, default=3,
+    parser.add_argument('--n-critic', type=int, default=2,
                         help='Discriminator updates per generator update')
     parser.add_argument('--lambda-gp', type=float, default=10.0,
                         help='Gradient penalty weight')
-    parser.add_argument('--lambda-constraint', type=float, default=0.2,
+    parser.add_argument('--lambda-constraint', type=float, default=2,
                         help='Constraint loss weight')
 
     # Optimizer

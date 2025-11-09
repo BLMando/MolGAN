@@ -41,9 +41,7 @@ class GraphProcessConstraints:
                  lambda_end_connect=15.0,
                  lambda_node_on_path=10.0,
                  lambda_end_no_out=25.0,
-                 lambda_end_unique=25.0,
-                 lambda_start_no_in=25.0,
-                 lambda_start_unique=25.0):
+                 lambda_end_unique=25.0):
         """
         Args:
             start_idx: Index of START activity
@@ -72,8 +70,6 @@ class GraphProcessConstraints:
         self.lambda_node_on_path = lambda_node_on_path
         self.lambda_end_no_out = lambda_end_no_out
         self.lambda_end_unique = lambda_end_unique
-        self.lambda_start_no_in = lambda_start_no_in
-        self.lambda_start_unique = lambda_start_unique
 
     def start_node_loss(self, nodes):
         """
@@ -214,11 +210,9 @@ class GraphProcessConstraints:
         loss = 0.0
         
         # START constraints: 0 in-degree, >=1 out-degree
-        start_in_penalty = start_probs * in_degrees  # Penalize ANY in-degree for START
+        start_in_penalty = tf.maximum(in_degrees * start_probs, 0.0)  # Penalize any in-degree for START
         start_out_penalty = tf.maximum((1.0 - out_degrees) * start_probs, 0.0)  # Penalize 0 out-degree for START
-        # Use squared penalty for in-degree to make it more severe
-        start_in_penalty_squared = tf.square(start_in_penalty)
-        loss += tf.reduce_mean(3.0 * start_in_penalty_squared + start_out_penalty)
+        loss += tf.reduce_mean(start_in_penalty + start_out_penalty)
         
         # END constraints: >=1 in-degree, 0 out-degree
         end_in_penalty = tf.maximum((1.0 - in_degrees) * end_probs, 0.0)  # Penalize 0 in-degree for END
@@ -422,89 +416,6 @@ class GraphProcessConstraints:
         # Clipped to avoid log(0)
         end_probs_safe = tf.clip_by_value(end_probs, 1e-10, 1.0)
         entropy = -tf.reduce_sum(end_probs * tf.math.log(end_probs_safe), axis=1)
-        entropy_loss = tf.reduce_mean(entropy)
-        
-        total_loss = count_loss + 3.0 * concentration_loss + 2.0 * entropy_loss
-        
-        return total_loss
-
-    def start_no_incoming_loss(self, adjacency, nodes):
-        """
-        CRITICAL constraint: START nodes must have ZERO incoming edges
-        
-        This is a hard constraint for process graphs - START is the initial node.
-        Uses very strong penalty with multiple approaches:
-        1. Direct penalty on in-degree of START nodes
-        2. Penalty on edges TO any node labeled as START
-        3. Squared penalty for severity
-        
-        Args:
-            adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
-            nodes: Node matrix (batch, max_nodes, num_activities)
-            
-        Returns:
-            Loss heavily penalizing START nodes with incoming edges
-        """
-        # Identify START nodes
-        start_probs = nodes[:, :, self.start_idx]  # (batch, max_nodes)
-        
-        # Sum over edge types to get total adjacency
-        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
-        
-        # Compute in-degree for each node (sum over source dimension)
-        in_degrees = tf.reduce_sum(total_adj, axis=1)  # (batch, max_nodes)
-        
-        # For START nodes: penalize ANY in-degree
-        start_in_penalty = start_probs * in_degrees  # (batch, max_nodes)
-        
-        # Apply multiple penalty formulations for stronger effect:
-        # 1. Linear penalty
-        loss_linear = tf.reduce_mean(start_in_penalty)
-        
-        # 2. Squared penalty (more severe for high in-degrees)
-        loss_squared = tf.reduce_mean(tf.square(start_in_penalty))
-        
-        # 3. Per-edge penalty: penalize each edge to START nodes
-        # For each START node, sum ALL its incoming edges
-        start_probs_expanded = tf.expand_dims(start_probs, axis=1)  # (batch, 1, max_nodes)
-        edges_to_start = total_adj * start_probs_expanded  # (batch, max_nodes, max_nodes)
-        loss_per_edge = tf.reduce_mean(edges_to_start)
-        
-        # Combine all penalties
-        total_loss = loss_linear + 2.0 * loss_squared + 3.0 * loss_per_edge
-        
-        return total_loss
-
-    def start_uniqueness_loss(self, nodes):
-        """
-        CRITICAL constraint: Only ONE START node per graph
-        
-        Uses multiple approaches:
-        1. Count constraint (sum should equal 1)
-        2. Concentration constraint (max probability should be ~1)
-        3. Sparsity constraint (penalize spread of START across nodes)
-        
-        Args:
-            nodes: Node matrix (batch, max_nodes, num_activities)
-            
-        Returns:
-            Loss encouraging exactly one START node
-        """
-        start_probs = nodes[:, :, self.start_idx]  # (batch, max_nodes)
-        
-        # 1. Count constraint: sum of START probabilities should be 1
-        start_count = tf.reduce_sum(start_probs, axis=1)  # (batch,)
-        count_loss = tf.reduce_mean(tf.square(start_count - 1.0))
-        
-        # 2. Concentration: one node should have high probability
-        max_start_prob = tf.reduce_max(start_probs, axis=1)  # (batch,)
-        concentration_loss = tf.reduce_mean(1.0 - max_start_prob)
-        
-        # 3. Sparsity: penalize having many nodes with non-zero START probability
-        # Use entropy-like measure: we want low entropy (concentrated)
-        # Clipped to avoid log(0)
-        start_probs_safe = tf.clip_by_value(start_probs, 1e-10, 1.0)
-        entropy = -tf.reduce_sum(start_probs * tf.math.log(start_probs_safe), axis=1)
         entropy_loss = tf.reduce_mean(entropy)
         
         total_loss = count_loss + 3.0 * concentration_loss + 2.0 * entropy_loss
@@ -735,8 +646,6 @@ class GraphProcessConstraints:
         node_on_path_loss = self.nodes_on_path_loss(adjacency, nodes)
         end_no_out_loss = self.end_no_outgoing_loss(adjacency, nodes)
         end_unique_loss = self.end_uniqueness_loss(nodes)
-        start_no_in_loss = self.start_no_incoming_loss(adjacency, nodes)
-        start_unique_loss = self.start_uniqueness_loss(nodes)
 
         # Weighted sum
         total_loss = (
@@ -752,9 +661,7 @@ class GraphProcessConstraints:
             self.lambda_end_connect * end_connect_loss +
             self.lambda_node_on_path * node_on_path_loss +
             self.lambda_end_no_out * end_no_out_loss +
-            self.lambda_end_unique * end_unique_loss +
-            self.lambda_start_no_in * start_no_in_loss +
-            self.lambda_start_unique * start_unique_loss
+            self.lambda_end_unique * end_unique_loss
         )
 
         return total_loss
@@ -783,7 +690,5 @@ class GraphProcessConstraints:
             'end_connect_loss': self.end_connectivity_loss(adjacency, nodes),
             'node_on_path_loss': self.nodes_on_path_loss(adjacency, nodes),
             'end_no_out_loss': self.end_no_outgoing_loss(adjacency, nodes),
-            'end_unique_loss': self.end_uniqueness_loss(nodes),
-            'start_no_in_loss': self.start_no_incoming_loss(adjacency, nodes),
-            'start_unique_loss': self.start_uniqueness_loss(nodes)
+            'end_unique_loss': self.end_uniqueness_loss(nodes)
         }

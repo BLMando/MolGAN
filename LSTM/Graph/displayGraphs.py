@@ -40,7 +40,7 @@ if not txt_files:
 
 print(f"Found {len(txt_files)} sample graphs")
 
-num_to_show = 5  # how many to visualize
+num_to_show = 100  # how many to visualize
 if len(txt_files) < num_to_show:
     num_to_show = len(txt_files)
 
@@ -58,7 +58,7 @@ for i in indices:
     # Optional: color nodes (use node id for simplicity)
     node_colors = list(G.nodes())
     
-    plt.figure(figsize=(6, 6))
+    plt.figure(figsize=(8, 7))
     pos = nx.spring_layout(G)  # Layout for better visualization
     nx.draw(
         G,
@@ -73,5 +73,7 @@ for i in indices:
         arrows=True,  # Show direction
         arrowsize=20
     )
-    plt.title(f"Generated Graph: {filename.name}")
+    plt.title(f"Generated Graph\n{filename.name}", fontsize=12, fontweight='bold')
+    plt.suptitle(f"File: {filename.name}", fontsize=10, y=0.02, color='gray')
+    plt.tight_layout()
     plt.show()

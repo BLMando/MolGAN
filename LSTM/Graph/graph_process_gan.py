@@ -45,7 +45,18 @@ class GraphProcessGAN(keras.Model):
                  n_critic=5,
                  lambda_gp=10.0,
                  lambda_constraint=0.1,
-                 lambda_degree=10.0,
+                 # Constraint weights
+                 lambda_start=1.0,
+                 lambda_end=3.0,
+                 lambda_frequency=1.0,
+                 lambda_connectivity=0.5,
+                 lambda_structure=20.0,
+                 lambda_unique=20.0,
+                 lambda_degree=15.0,
+                 lambda_path=10.0,
+                 lambda_start_connect=20.0,
+                 lambda_end_connect=20.0,
+                 lambda_node_on_path=15.0,
                  # Temperature scheduling
                  temp_start=5.0,
                  temp_min=0.5,
@@ -68,7 +79,17 @@ class GraphProcessGAN(keras.Model):
             n_critic: Number of discriminator updates per generator update
             lambda_gp: Gradient penalty coefficient
             lambda_constraint: Constraint loss coefficient
-            lambda_degree: Degree constraint coefficient
+            lambda_start: START node constraint weight
+            lambda_end: END node constraint weight
+            lambda_frequency: Activity frequency matching weight
+            lambda_connectivity: General connectivity weight
+            lambda_structure: Structural validity weight
+            lambda_unique: Unique START/END weight
+            lambda_degree: Degree constraint weight
+            lambda_path: Path existence weight
+            lambda_start_connect: START connectivity weight
+            lambda_end_connect: END connectivity weight
+            lambda_node_on_path: Nodes on path weight
             temp_start: Initial Gumbel-Softmax temperature
             temp_min: Minimum temperature
             temp_decay: Temperature decay rate
@@ -82,7 +103,6 @@ class GraphProcessGAN(keras.Model):
         self.n_critic = n_critic
         self.lambda_gp = lambda_gp
         self.lambda_constraint = lambda_constraint
-        self.lambda_degree = lambda_degree
 
         # Temperature for Gumbel-Softmax
         self.temperature = tf.Variable(
@@ -114,7 +134,17 @@ class GraphProcessGAN(keras.Model):
             start_idx=start_idx,
             end_idx=end_idx,
             activity_frequencies=activity_frequencies,
-            lambda_degree=self.lambda_degree
+            lambda_start=lambda_start,
+            lambda_end=lambda_end,
+            lambda_frequency=lambda_frequency,
+            lambda_connectivity=lambda_connectivity,
+            lambda_structure=lambda_structure,
+            lambda_unique=lambda_unique,
+            lambda_degree=lambda_degree,
+            lambda_path=lambda_path,
+            lambda_start_connect=lambda_start_connect,
+            lambda_end_connect=lambda_end_connect,
+            lambda_node_on_path=lambda_node_on_path
         )
 
         # Metrics (tracked automatically by Keras)

@@ -14,8 +14,10 @@ def load_graph_from_txt(filename):
     
     Returns:
         G: NetworkX DiGraph
+        edges_ordered: List of (source, target) tuples in original file order
     """
     G = nx.DiGraph()
+    edges_ordered = []  # Preserve original edge order
     with open(filename, 'r') as f:
         for line in f:
             line = line.strip()
@@ -29,7 +31,8 @@ def load_graph_from_txt(filename):
                 source = int(parts[1])
                 target = int(parts[2])
                 G.add_edge(source, target)
-    return G
+                edges_ordered.append((source, target))  # Preserve order
+    return G, edges_ordered
 
 # Path where your samples were saved
 samples_dir = Path("../../output_graph_gan/samples")
@@ -53,8 +56,8 @@ indices = np.random.choice(len(txt_files), num_to_show, replace=False)
 for i in indices:
     filename = txt_files[i]
 
-    # Load graph
-    G = load_graph_from_txt(filename)
+    # Load graph and preserve original edge order
+    G, edges_ordered = load_graph_from_txt(filename)
 
     # Create labels from node activities (original nodes)
     labels = {node: data['activity'] for node, data in G.nodes(data=True)}
@@ -73,14 +76,15 @@ for i in indices:
     for act in activities:
         H.add_node(act)
 
-    # Add edges between activities; count multiplicity in 'weight'
-    for u, v in G.edges():
+    # Convert edges to activity pairs, preserving ALL duplicates and original order
+    edge_pairs = []
+    for u, v in edges_ordered:
         au = labels.get(u, str(u))
         av = labels.get(v, str(v))
-        if H.has_edge(au, av):
-            H[au][av]['weight'] += 1
-        else:
-            H.add_edge(au, av, weight=1)
+        edge_pairs.append((au, av))
+        # Add to H for layout purposes (duplicates will be handled in visualization)
+        if not H.has_edge(au, av):
+            H.add_edge(au, av)
 
     # Remove START/END from the collapsed graph if they are isolated (no incident edges)
     # This ensures we don't force-show START/END when they don't participate in any edge
@@ -113,84 +117,41 @@ for i in indices:
     # --- Interactive step mode: enabled only when --step is passed on the command line
     step_mode = ('--step' in sys.argv)
 
-    # Prepare pair color mapping for edges.
-    # Instead of a unique color per edge, assign the same color to edges that share
-    # the same source node. This lets us show those edges together and color them
-    # consistently in the legend.
-    edge_pairs = list(H.edges())
+    # Group consecutive edges by same source node (parallelism detection)
+    # Edges with same consecutive source get same color
+    edge_groups = []  # List of (start_idx, end_idx, source_node)
     if edge_pairs:
-        # Ordered list of unique sources as they appear in edge_pairs
-        unique_sources = []
-        for u, v in edge_pairs:
-            if u not in unique_sources:
-                unique_sources.append(u)
+        current_source = edge_pairs[0][0]
+        group_start = 0
+        
+        for idx in range(1, len(edge_pairs)):
+            if edge_pairs[idx][0] != current_source:
+                # End of current group
+                edge_groups.append((group_start, idx - 1, current_source))
+                current_source = edge_pairs[idx][0]
+                group_start = idx
+        
+        # Add last group
+        edge_groups.append((group_start, len(edge_pairs) - 1, current_source))
+    
+    # Assign same color to edges in the same group (consecutive edges from same source)
+    num_groups = len(edge_groups)
+    group_hues = np.linspace(0, 1, max(num_groups, 1), endpoint=False)
+    group_colors = [mcolors.hsv_to_rgb((h, 0.75, 1.0)) for h in group_hues]
+    
+    pair_color_map = {}
+    for group_idx, (start_idx, end_idx, source) in enumerate(edge_groups):
+        color = group_colors[group_idx % len(group_colors)]
+        for edge_idx in range(start_idx, end_idx + 1):
+            pair_color_map[edge_idx] = color
 
-        S = len(unique_sources)
-        source_hues = np.linspace(0, 1, max(S, 1), endpoint=False)
-        source_colors = [mcolors.hsv_to_rgb((h, 0.75, 1.0)) for h in source_hues]
-        source_color_map = {unique_sources[i]: source_colors[i % len(source_colors)] for i in range(len(unique_sources))}
-
-        # Map each edge to the color of its source
-        pair_color_map = {e: source_color_map[e[0]] for e in edge_pairs}
-    else:
-        pair_color_map = {}
 
     # Create a small curvature map to avoid perfectly overlapping straight edges
     pair_rad_map = {}
-    for idx, e in enumerate(edge_pairs):
+    for idx in range(len(edge_pairs)):
         # alternate small radii to spread parallel edges
         rad = ((idx % 5) - 2) * 0.06  # values like -0.12, -0.06, 0.0, 0.06, 0.12
-        pair_rad_map[e] = rad
-
-    # Build reveal steps grouped by source: reveal all edges from the same source together.
-    # The order of steps follows the first occurrence of each source in edge_pairs.
-    reveal_steps = []
-    if edge_pairs:
-        # map source -> list of its edges (preserve order)
-        source_to_edges = {s: [] for s in unique_sources}
-        for e in edge_pairs:
-            source_to_edges[e[0]].append(e)
-        for s in unique_sources:
-            if source_to_edges[s]:
-                reveal_steps.append(source_to_edges[s])
-
-    def compute_reveal_groups(graph, start_nodes):
-        """Compute an ordered list of edge-groups to reveal.
-
-        Each group is a list of (src, tgt) edges that are considered parallel
-        (multiple outgoing from the same source discovered at the same BFS step).
-        """
-        groups = []
-        from collections import deque
-
-        if start_nodes:
-            q = deque(start_nodes)
-            visited = set(start_nodes)
-        else:
-            roots = [n for n, d in graph.in_degree() if d == 0]
-            q = deque(roots)
-            visited = set(roots)
-
-        # BFS: for each popped node, collect outgoing edges to not-yet-visited targets
-        while q:
-            u = q.popleft()
-            new_vs = [v for v in graph.successors(u) if v not in visited]
-            if new_vs:
-                group = [(u, v) for v in new_vs]
-                groups.append(group)
-                for v in new_vs:
-                    visited.add(v)
-                    q.append(v)
-
-        # Add any remaining edges (between nodes not reached from starts) as singletons
-        remaining = []
-        for u, v in graph.edges():
-            if (u, v) not in [e for g in groups for e in g]:
-                remaining.append((u, v))
-        for e in remaining:
-            groups.append([e])
-
-        return groups
+        pair_rad_map[idx] = rad
 
     # Detect start/end activities by label (case-insensitive)
     start_activities = [a for a in activities if str(a).upper() == 'START']
@@ -288,9 +249,8 @@ for i in indices:
     node_colors = [activity_color_map[a] for a in node_list]
     nx.draw_networkx_nodes(H, pos, nodelist=node_list, node_color=node_colors, node_size=900, ax=ax)
 
-    # Prepare interactive reveal groups (fallback BFS groups) but prefer reveal_steps
-    reveal_groups = compute_reveal_groups(H, start_activities)
-    revealed_edges = set()
+    # Track revealed edges for step mode (by index)
+    revealed_edge_indices = set()
 
     def redraw(all_highlighted=None):
         ax.clear()
@@ -299,16 +259,18 @@ for i in indices:
         nx.draw_networkx_labels(H, pos, labels={a: a for a in activities}, font_size=10, font_color='black', ax=ax)
 
         # draw unrevealed edges in light gray, with per-edge curvature to avoid overlap
-        unrevealed = [e for e in H.edges() if e not in revealed_edges]
-        for e in unrevealed:
-            rad = pair_rad_map.get(e, 0.0)
-            nx.draw_networkx_edges(H, pos, edgelist=[e], edge_color='lightgray', arrows=True, arrowsize=20, ax=ax, connectionstyle=f'arc3,rad={rad}')
+        for idx in range(len(edge_pairs)):
+            if idx not in revealed_edge_indices:
+                e = edge_pairs[idx]
+                rad = pair_rad_map.get(idx, 0.0)
+                nx.draw_networkx_edges(H, pos, edgelist=[e], edge_color='lightgray', arrows=True, arrowsize=20, ax=ax, connectionstyle=f'arc3,rad={rad}')
 
-        # draw revealed edges with pair-specific color and thicker linewidth
-        if revealed_edges:
-            for e in revealed_edges:
-                color = pair_color_map.get(e, activity_color_map.get(e[0], 'k'))
-                rad = pair_rad_map.get(e, 0.0)
+        # draw revealed edges with unique color and thicker linewidth
+        if revealed_edge_indices:
+            for idx in revealed_edge_indices:
+                e = edge_pairs[idx]
+                color = pair_color_map.get(idx, 'k')
+                rad = pair_rad_map.get(idx, 0.0)
                 nx.draw_networkx_edges(H, pos, edgelist=[e], edge_color=[color], arrows=True, arrowsize=20, width=3.0, ax=ax, connectionstyle=f'arc3,rad={rad}')
 
     ax.set_axis_off()
@@ -319,17 +281,17 @@ for i in indices:
     redraw()
     plt.show(block=False)
 
-    # In step mode, reveal edges grouped by source (reveal_steps) so edges from the
-    # same source are shown together and share the same color.
-    if step_mode and reveal_steps:
-        total_steps = len(reveal_steps)
-        print(f"Interactive reveal: {total_steps} steps. Press Enter to reveal next (q + Enter to quit).")
-        for group in reveal_steps:
+    # In step mode, reveal edges GROUP by GROUP (consecutive edges with same source)
+    if step_mode and edge_pairs:
+        total_steps = len(edge_groups)
+        print(f"Interactive reveal: {total_steps} groups. Press Enter to reveal next group (q + Enter to quit).")
+        for group_idx, (start_idx, end_idx, source) in enumerate(edge_groups):
             user_in = input()
             if user_in.lower().strip() == 'q':
                 break
-            for e in group:
-                revealed_edges.add(e)
+            # Reveal all edges in this group at once
+            for edge_idx in range(start_idx, end_idx + 1):
+                revealed_edge_indices.add(edge_idx)
             redraw()
             plt.pause(0.01)
         # final pause to inspect
@@ -339,10 +301,11 @@ for i in indices:
         except Exception:
             pass
     else:
-        # If not step_mode or no groups, draw all edges with pair colors and non-overlapping curvature
-        for e in H.edges():
-            color = pair_color_map.get(e, activity_color_map.get(e[0], 'k'))
-            rad = pair_rad_map.get(e, 0.0)
+        # If not step_mode, draw all edges with group colors and non-overlapping curvature
+        for idx in range(len(edge_pairs)):
+            e = edge_pairs[idx]
+            color = pair_color_map.get(idx, 'k')
+            rad = pair_rad_map.get(idx, 0.0)
             nx.draw_networkx_edges(H, pos, edgelist=[e], edge_color=[color], arrows=True, arrowsize=20, ax=ax, connectionstyle=f'arc3,rad={rad}')
 
     # Draw labels on activity-nodes with readable font
@@ -351,17 +314,17 @@ for i in indices:
     # Title: filename on top
     # title already set in redraw
 
-    # Create a legend for edges on the right showing pair colors
-    # Use the previously created pair_color_map so legend colors match interactive drawing
+    # Create a legend for edges on the right showing unique edge colors
+    # Each edge (including duplicates) has its own color in original file order
     if edge_pairs:
-        handles = [Line2D([0], [0], color=pair_color_map[p], lw=3) for p in edge_pairs]
-        labels = [f"{u} -> {v}" for u, v in edge_pairs]
+        handles = [Line2D([0], [0], color=pair_color_map[i], lw=3) for i in range(len(edge_pairs))]
+        labels = [f"{u} → {v}" for u, v in edge_pairs]
         # Draw legend inside the dedicated legend axis so it's always visible
         legend = legend_ax.legend(handles=handles, labels=labels, loc='center', frameon=True)
         # Color only the legend handles (markers/lines); keep text black for readability
-        for lh, pair in zip(handles, edge_pairs):
+        for idx, lh in enumerate(handles):
             try:
-                lh.set_color(pair_color_map[pair])
+                lh.set_color(pair_color_map[idx])
                 lh.set_linewidth(3.0)
             except Exception:
                 pass

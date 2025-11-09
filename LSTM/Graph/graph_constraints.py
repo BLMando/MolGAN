@@ -37,11 +37,11 @@ class GraphProcessConstraints:
                  lambda_unique=10.0,
                  lambda_degree=10.0,
                  lambda_path=5.0,
-                 lambda_start_connect=15.0,
-                 lambda_end_connect=15.0,
+                 lambda_start_connect=20.0,
+                 lambda_end_connect=20.0,
                  lambda_node_on_path=10.0,
-                 lambda_end_no_out=25.0,
-                 lambda_end_unique=25.0):
+                 lambda_end_no_out=0.0,
+                 lambda_end_unique=0.0):
         """
         Args:
             start_idx: Index of START activity
@@ -103,10 +103,10 @@ class GraphProcessConstraints:
         """
         Constraint: Last active node should be END
         
-        Enhanced version:
-        1. Identifies nodes with zero out-degree
+        Soft version that encourages but doesn't force:
+        1. Identifies nodes with low/zero out-degree
         2. Among those, encourages END label
-        3. Penalizes END appearing at nodes WITH out-degree
+        3. Gently discourages (not forbids) END at nodes with out-degree
 
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
@@ -115,43 +115,35 @@ class GraphProcessConstraints:
         Returns:
             Loss encouraging last active node to be END
         """
-        batch_size = tf.shape(nodes)[0]
-        max_nodes = tf.shape(nodes)[1]
-
-        # Find last active node (node with no outgoing edges)
-        # Sum over all edge types to get total outgoing edges
-        # (batch, max_nodes, max_nodes)
+        # Find nodes with low out-degree (terminal candidates)
         total_adj = tf.reduce_sum(adjacency, axis=-1)
-        outgoing_edges = tf.reduce_sum(
-            total_adj, axis=-1)  # (batch, max_nodes)
+        outgoing_edges = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes)
 
         # Mask for active nodes (not PAD)
         active_mask = 1.0 - nodes[:, :, self.pad_idx]  # (batch, max_nodes)
 
-        # Last active node: active and no outgoing edges
-        is_last = active_mask * (1.0 - tf.minimum(outgoing_edges, 1.0))
+        # Terminal score: active nodes with low out-degree
+        # Use soft weighting instead of hard threshold
+        terminal_score = active_mask * tf.nn.sigmoid(-(outgoing_edges - 0.5) * 5.0)
 
-        # Soft attention: weight each position by likelihood of being last
-        attention_weights = tf.nn.softmax(
-            is_last, axis=1)  # (batch, max_nodes)
-        attention_weights = tf.expand_dims(
-            attention_weights, axis=-1)  # (batch, max_nodes, 1)
+        # Soft attention: weight each position by likelihood of being terminal
+        attention_weights = tf.nn.softmax(terminal_score + 1e-10, axis=1)  # (batch, max_nodes)
+        attention_weights = tf.expand_dims(attention_weights, axis=-1)  # (batch, max_nodes, 1)
 
         # Weighted sum of node probabilities
-        weighted_nodes = tf.reduce_sum(
-            nodes * attention_weights, axis=1)  # (batch, num_activities)
+        weighted_nodes = tf.reduce_sum(nodes * attention_weights, axis=1)  # (batch, num_activities)
 
-        # Encourage END activity at last position
+        # Encourage END activity at terminal positions
         end_probs = weighted_nodes[:, self.end_idx]
         loss_encourage_end = -tf.reduce_mean(tf.math.log(end_probs + 1e-10))
         
-        # NEW: Heavily penalize END nodes that HAVE outgoing edges
+        # Soft penalty for END nodes with many outgoing edges (not zero tolerance)
         end_node_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
-        has_outgoing = tf.minimum(outgoing_edges, 1.0)  # Binary: 1 if has out-edges
-        end_with_outgoing = end_node_probs * has_outgoing  # END nodes with out-edges
-        loss_end_with_edges = tf.reduce_mean(end_with_outgoing)
+        # Only penalize if out_degree > 1 (allow some flexibility)
+        end_with_many_outgoing = end_node_probs * tf.nn.relu(outgoing_edges - 1.0)
+        loss_end_with_edges = tf.reduce_mean(end_with_many_outgoing)
         
-        return loss_encourage_end + 5.0 * loss_end_with_edges
+        return loss_encourage_end + 2.0 * loss_end_with_edges
 
     def activity_frequency_loss(self, nodes):
         """
@@ -183,10 +175,12 @@ class GraphProcessConstraints:
 
     def degree_constraint_loss(self, adjacency, nodes):
         """
-        Strict degree constraints for process graphs:
+        Soft degree constraints for process graphs:
         - START: exactly 0 in-degree, at least 1 out-degree
         - END: at least 1 in-degree, exactly 0 out-degree
         - Other nodes: at least 1 in-degree and 1 out-degree
+        
+        Uses SOFT penalties that allow gradual learning
         
         Args:
             adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
@@ -199,8 +193,8 @@ class GraphProcessConstraints:
         total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
         
         # Compute degrees
-        in_degrees = tf.reduce_sum(total_adj, axis=-1)  # (batch, max_nodes)
-        out_degrees = tf.reduce_sum(total_adj, axis=-2)  # (batch, max_nodes)
+        in_degrees = tf.reduce_sum(total_adj, axis=1)  # (batch, max_nodes) - sum over sources
+        out_degrees = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes) - sum over targets
         
         # Identify START and END nodes
         start_probs = nodes[:, :, self.start_idx]  # (batch, max_nodes)
@@ -210,21 +204,22 @@ class GraphProcessConstraints:
         loss = 0.0
         
         # START constraints: 0 in-degree, >=1 out-degree
-        start_in_penalty = tf.maximum(in_degrees * start_probs, 0.0)  # Penalize any in-degree for START
-        start_out_penalty = tf.maximum((1.0 - out_degrees) * start_probs, 0.0)  # Penalize 0 out-degree for START
+        # Use smooth penalty: sigmoid-based instead of hard threshold
+        start_in_penalty = start_probs * in_degrees
+        start_out_penalty = start_probs * tf.nn.relu(1.0 - out_degrees)  # Only penalize if < 1
         loss += tf.reduce_mean(start_in_penalty + start_out_penalty)
         
         # END constraints: >=1 in-degree, 0 out-degree
-        end_in_penalty = tf.maximum((1.0 - in_degrees) * end_probs, 0.0)  # Penalize 0 in-degree for END
-        end_out_penalty = out_degrees * end_probs  # Penalize ANY out-degree for END (no tf.maximum needed - we want to penalize all)
-        # Use squared penalty for out-degree to make it more severe
-        end_out_penalty_squared = tf.square(end_out_penalty)
-        loss += tf.reduce_mean(end_in_penalty + 3.0 * end_out_penalty_squared)
+        # More lenient: allow some flexibility during training
+        end_in_penalty = end_probs * tf.nn.relu(1.0 - in_degrees)  # Only penalize if < 1
+        end_out_penalty = end_probs * out_degrees  # Penalize any out-degree but softly
+        loss += tf.reduce_mean(end_in_penalty + end_out_penalty)
         
         # Other nodes: >=1 in-degree and >=1 out-degree
         other_mask = 1.0 - start_probs - end_probs - nodes[:, :, self.pad_idx]  # (batch, max_nodes)
-        other_in_penalty = tf.maximum((1.0 - in_degrees) * other_mask, 0.0)
-        other_out_penalty = tf.maximum((1.0 - out_degrees) * other_mask, 0.0)
+        other_mask = tf.maximum(other_mask, 0.0)  # Ensure non-negative
+        other_in_penalty = other_mask * tf.nn.relu(1.0 - in_degrees)
+        other_out_penalty = other_mask * tf.nn.relu(1.0 - out_degrees)
         loss += tf.reduce_mean(other_in_penalty + other_out_penalty)
         
         return loss
@@ -340,20 +335,16 @@ class GraphProcessConstraints:
 
     def end_no_outgoing_loss(self, adjacency, nodes):
         """
-        CRITICAL constraint: END nodes must have ZERO outgoing edges
+        Moderate constraint: END nodes should have minimal outgoing edges
         
-        This is a hard constraint for process graphs - END is terminal.
-        Uses very strong penalty with multiple approaches:
-        1. Direct penalty on out-degree of END nodes
-        2. Penalty on edges FROM any node labeled as END
-        3. Squared penalty for severity
+        Uses soft penalty that allows learning without being too restrictive
         
         Args:
             adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
             nodes: Node matrix (batch, max_nodes, num_activities)
             
         Returns:
-            Loss heavily penalizing END nodes with outgoing edges
+            Loss encouraging END nodes to have few/no outgoing edges
         """
         # Identify END nodes
         end_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
@@ -362,63 +353,40 @@ class GraphProcessConstraints:
         total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
         
         # Compute out-degree for each node
-        out_degrees = tf.reduce_sum(total_adj, axis=-1)  # (batch, max_nodes)
+        out_degrees = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes)
         
-        # For END nodes: penalize ANY out-degree
-        # Use exponential penalty: penalty grows exponentially with out-degree
-        end_out_penalty = end_probs * out_degrees  # (batch, max_nodes)
+        # For END nodes: soft penalty on out-degree
+        # Use ReLU to only penalize when out_degree > threshold
+        threshold = 0.5  # Allow some flexibility
+        end_out_penalty = end_probs * tf.nn.relu(out_degrees - threshold)
         
-        # Apply multiple penalty formulations for stronger effect:
-        # 1. Linear penalty
-        loss_linear = tf.reduce_mean(end_out_penalty)
+        loss = tf.reduce_mean(end_out_penalty)
         
-        # 2. Squared penalty (more severe for high out-degrees)
-        loss_squared = tf.reduce_mean(tf.square(end_out_penalty))
-        
-        # 3. Per-edge penalty: penalize each edge from END nodes
-        # For each END node, sum ALL its outgoing edges
-        end_probs_expanded = tf.expand_dims(end_probs, axis=-1)  # (batch, max_nodes, 1)
-        edges_from_end = total_adj * end_probs_expanded  # (batch, max_nodes, max_nodes)
-        loss_per_edge = tf.reduce_mean(edges_from_end)
-        
-        # Combine all penalties
-        total_loss = loss_linear + 2.0 * loss_squared + 3.0 * loss_per_edge
-        
-        return total_loss
+        return loss
 
     def end_uniqueness_loss(self, nodes):
         """
-        CRITICAL constraint: Only ONE END node per graph
+        Moderate constraint: Encourage one dominant END node per graph
         
-        Uses multiple approaches:
-        1. Count constraint (sum should equal 1)
-        2. Concentration constraint (max probability should be ~1)
-        3. Sparsity constraint (penalize spread of END across nodes)
+        Uses soft concentration penalty without being too restrictive
         
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
             
         Returns:
-            Loss encouraging exactly one END node
+            Loss encouraging concentration of END probability
         """
         end_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
         
-        # 1. Count constraint: sum of END probabilities should be 1
+        # 1. Soft count constraint: gently push sum towards 1
         end_count = tf.reduce_sum(end_probs, axis=1)  # (batch,)
-        count_loss = tf.reduce_mean(tf.square(end_count - 1.0))
+        count_loss = tf.reduce_mean(tf.abs(end_count - 1.0))  # Use L1 instead of L2 for softer penalty
         
-        # 2. Concentration: one node should have high probability
+        # 2. Concentration: encourage one node to dominate
         max_end_prob = tf.reduce_max(end_probs, axis=1)  # (batch,)
-        concentration_loss = tf.reduce_mean(1.0 - max_end_prob)
+        concentration_loss = tf.reduce_mean(tf.nn.relu(0.5 - max_end_prob))  # Only penalize if max < 0.5
         
-        # 3. Sparsity: penalize having many nodes with non-zero END probability
-        # Use entropy-like measure: we want low entropy (concentrated)
-        # Clipped to avoid log(0)
-        end_probs_safe = tf.clip_by_value(end_probs, 1e-10, 1.0)
-        entropy = -tf.reduce_sum(end_probs * tf.math.log(end_probs_safe), axis=1)
-        entropy_loss = tf.reduce_mean(entropy)
-        
-        total_loss = count_loss + 3.0 * concentration_loss + 2.0 * entropy_loss
+        total_loss = count_loss + concentration_loss
         
         return total_loss
 
@@ -463,38 +431,39 @@ class GraphProcessConstraints:
 
     def end_connectivity_loss(self, adjacency, nodes):
         """
-        Strict constraint: END must have incoming edges from non-PAD/non-END nodes
+        Soft constraint: END should have incoming edges from valid nodes
+        
+        Uses gradient-friendly formulation
         
         Args:
             adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
             nodes: Node matrix (batch, max_nodes, num_activities)
             
         Returns:
-            Loss heavily penalizing END with no incoming connections
+            Loss gently encouraging END to have incoming connections
         """
-        # Identify END node
+        # Identify END node probabilities
         end_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
         
         # Sum over edge types
         total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
         
-        # Incoming edges: transpose to get (batch, target, source)
-        incoming_adj = tf.transpose(total_adj, perm=[0, 2, 1])
+        # Incoming edges per node (sum over source dimension)
+        incoming = tf.reduce_sum(total_adj, axis=1)  # (batch, max_nodes)
         
-        # Mask for valid source nodes (non-PAD and non-END)
-        valid_source_mask = 1.0 - nodes[:, :, self.pad_idx] - end_probs  # (batch, max_nodes)
-        valid_source_mask = tf.expand_dims(valid_source_mask, axis=1)  # (batch, 1, max_nodes)
+        # Mask for valid source nodes (non-PAD, non-END)
+        valid_source_mask = 1.0 - nodes[:, :, self.pad_idx] - end_probs
+        valid_source_mask = tf.maximum(valid_source_mask, 0.0)
         
-        # Incoming edges from valid sources
-        valid_incoming = incoming_adj * valid_source_mask  # (batch, max_nodes, max_nodes)
+        # Weight incoming edges by source validity
+        # This approximates "incoming from valid sources"
+        weighted_incoming = incoming * tf.reduce_mean(valid_source_mask, axis=1, keepdims=True)
         
-        # Sum incoming edges per target node
-        total_valid_in = tf.reduce_sum(valid_incoming, axis=-1)  # (batch, max_nodes)
+        # For END nodes, gently encourage having some incoming connections
+        # Use soft threshold: only penalize if incoming < 0.5
+        end_needs_incoming = end_probs * tf.nn.relu(0.5 - weighted_incoming)
         
-        # For END nodes, heavily penalize if no incoming edges
-        end_no_in_penalty = end_probs * tf.nn.sigmoid(-(total_valid_in - 0.5) * 10.0)
-        
-        loss = tf.reduce_mean(end_no_in_penalty)
+        loss = tf.reduce_mean(end_needs_incoming)
         
         return loss
 

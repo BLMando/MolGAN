@@ -45,7 +45,7 @@ class GraphProcessGAN(keras.Model):
                  n_critic=5,
                  lambda_gp=10.0,
                  lambda_constraint=0.1,
-                 lambda_start=1.0,
+                 lambda_start=3.0,
                  lambda_end=2.0,
                  lambda_frequency=1.0,
                  lambda_connectivity=0.5,

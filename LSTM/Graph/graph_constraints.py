@@ -30,18 +30,18 @@ class GraphProcessConstraints:
                  activity_frequencies,
                  pad_idx=0,
                  lambda_start=1.0,
-                 lambda_end=3.0,
+                 lambda_end=2.0,
                  lambda_frequency=1.0,
                  lambda_connectivity=0.5,
-                 lambda_structure=20.0,
-                 lambda_unique=10.0,
-                 lambda_degree=10.0,
-                 lambda_path=5.0,
-                 lambda_start_connect=20.0,
-                 lambda_end_connect=20.0,
-                 lambda_node_on_path=10.0,
-                 lambda_end_no_out=0.0,
-                 lambda_end_unique=0.0):
+                 lambda_structure=5.0,
+                 lambda_unique=5.0,
+                 lambda_degree=5.0,
+                 lambda_path=3.0,
+                 lambda_start_connect=5.0,
+                 lambda_end_connect=8.0,
+                 lambda_node_on_path=5.0,
+                 lambda_end_no_out=10.0,
+                 lambda_end_unique=8.0):
         """
         Args:
             start_idx: Index of START activity
@@ -73,11 +73,12 @@ class GraphProcessConstraints:
 
     def start_node_loss(self, nodes):
         """
-        Constraint: First node should be START
+        Constraint: First node should be START and ONLY first node
         
-        Enhanced with:
+        Strong enforcement with:
         1. Cross-entropy for first node being START
-        2. Penalty for START appearing elsewhere
+        2. Heavy penalty for START appearing elsewhere
+        3. Concentration penalty to ensure single START
         
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
@@ -85,19 +86,28 @@ class GraphProcessConstraints:
         Returns:
             Loss encouraging first node to be START (and only first node)
         """
-        # First node probabilities
-        first_node = nodes[:, 0, :]  # (batch, num_activities)
-
-        # Cross-entropy loss: encourage START at position 0
-        start_probs_first = first_node[:, self.start_idx]
+        # Extract START probabilities for all positions
+        start_probs = nodes[:, :, self.start_idx]  # (batch, max_nodes)
+        
+        # 1. First node must be START - use strong cross-entropy
+        start_probs_first = start_probs[:, 0]  # (batch,)
         loss_first = -tf.reduce_mean(tf.math.log(start_probs_first + 1e-10))
         
-        # Also penalize START appearing at other positions (not first)
-        other_nodes = nodes[:, 1:, :]  # (batch, max_nodes-1, num_activities)
-        start_probs_others = other_nodes[:, :, self.start_idx]  # (batch, max_nodes-1)
-        loss_others = tf.reduce_mean(start_probs_others)  # Penalize any START elsewhere
+        # 2. Heavily penalize START appearing at other positions
+        start_probs_others = start_probs[:, 1:]  # (batch, max_nodes-1)
+        # Use squared penalty for stronger effect
+        loss_others = tf.reduce_mean(tf.square(start_probs_others))
         
-        return loss_first + 2.0 * loss_others
+        # 3. Ensure START probability sums to ~1 (count constraint)
+        start_count = tf.reduce_sum(start_probs, axis=1)  # (batch,)
+        loss_count = tf.reduce_mean(tf.square(start_count - 1.0))
+        
+        # 4. Concentration: max START probability should be at position 0
+        max_start_elsewhere = tf.reduce_max(start_probs_others, axis=1)  # (batch,)
+        loss_concentration = tf.reduce_mean(max_start_elsewhere)
+        
+        # Combine all penalties
+        return loss_first + 3.0 * loss_others + 2.0 * loss_count + 2.0 * loss_concentration
 
     def end_node_loss(self, nodes, adjacency):
         """
@@ -292,9 +302,9 @@ class GraphProcessConstraints:
         """
         Constraint: Ensure only one START and one END per graph
         
-        Uses a more stringent approach:
-        1. Penalize squared deviation from count=1
-        2. Add entropy penalty to encourage concentration
+        Soft version that allows gradual learning:
+        1. Gentle count constraint (L1 instead of L2)
+        2. Concentration encouragement
         
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
@@ -310,26 +320,21 @@ class GraphProcessConstraints:
         end_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
         end_count = tf.reduce_sum(end_probs, axis=1)  # (batch,)
         
-        # Penalize deviation from 1 (squared loss for stronger penalty)
-        count_loss = tf.reduce_mean(tf.square(start_count - 1.0)) + \
-                     tf.reduce_mean(tf.square(end_count - 1.0))
+        # Soft count constraint using L1 (less aggressive than L2)
+        count_loss = tf.reduce_mean(tf.abs(start_count - 1.0)) + \
+                     tf.reduce_mean(tf.abs(end_count - 1.0))
         
-        # Add concentration penalty: encourage one node to have high probability
-        # rather than spreading probability across multiple nodes
-        # Entropy is high when probability is spread, low when concentrated
-        # We want low entropy, so we penalize high entropy
-        
-        # For START: we want one node to have prob ~1, others ~0
-        # Compute negative max probability (we want max to be close to 1)
+        # Concentration: encourage one node to dominate
+        # For START
         max_start_prob = tf.reduce_max(start_probs, axis=1)  # (batch,)
-        concentration_loss_start = tf.reduce_mean(1.0 - max_start_prob)
+        concentration_loss_start = tf.reduce_mean(tf.nn.relu(0.5 - max_start_prob))
         
         # For END
         max_end_prob = tf.reduce_max(end_probs, axis=1)  # (batch,)
-        concentration_loss_end = tf.reduce_mean(1.0 - max_end_prob)
+        concentration_loss_end = tf.reduce_mean(tf.nn.relu(0.5 - max_end_prob))
         
-        # Total loss combines count constraint and concentration
-        total_loss = count_loss + 2.0 * (concentration_loss_start + concentration_loss_end)
+        # Softer combination
+        total_loss = count_loss + concentration_loss_start + concentration_loss_end
         
         return total_loss
 

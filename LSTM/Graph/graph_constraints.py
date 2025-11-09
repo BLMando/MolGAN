@@ -40,8 +40,9 @@ class GraphProcessConstraints:
                  lambda_start_connect=5.0,
                  lambda_end_connect=8.0,
                  lambda_node_on_path=5.0,
-                 lambda_end_no_out=10.0,
-                 lambda_end_unique=8.0):
+                 lambda_end_no_out=8.0,
+                 lambda_end_unique=8.0,
+                 lambda_edge_continuity=12.0):
         """
         Args:
             start_idx: Index of START activity
@@ -70,6 +71,7 @@ class GraphProcessConstraints:
         self.lambda_node_on_path = lambda_node_on_path
         self.lambda_end_no_out = lambda_end_no_out
         self.lambda_end_unique = lambda_end_unique
+        self.lambda_edge_continuity = lambda_edge_continuity
 
     def start_node_loss(self, nodes):
         """
@@ -187,7 +189,7 @@ class GraphProcessConstraints:
         """
         Soft degree constraints for process graphs:
         - START: exactly 0 in-degree, at least 1 out-degree
-        - END: at least 1 in-degree, exactly 0 out-degree
+        - END: exactly 1 in-degree, exactly 0 out-degree
         - Other nodes: at least 1 in-degree and 1 out-degree
         
         Uses SOFT penalties that allow gradual learning
@@ -219,10 +221,12 @@ class GraphProcessConstraints:
         start_out_penalty = start_probs * tf.nn.relu(1.0 - out_degrees)  # Only penalize if < 1
         loss += tf.reduce_mean(start_in_penalty + start_out_penalty)
         
-        # END constraints: >=1 in-degree, 0 out-degree
-        # More lenient: allow some flexibility during training
-        end_in_penalty = end_probs * tf.nn.relu(1.0 - in_degrees)  # Only penalize if < 1
-        end_out_penalty = end_probs * out_degrees  # Penalize any out-degree but softly
+        # END constraints: EXACTLY 1 in-degree, EXACTLY 0 out-degree
+        # Stronger penalties for END to ensure uniqueness and finality
+        # Penalize deviation from exactly 1 in-degree
+        end_in_penalty = end_probs * tf.square(in_degrees - 1.0)  # Square penalty for stronger effect
+        # Penalize any out-degree (must be exactly 0)
+        end_out_penalty = end_probs * tf.square(out_degrees)  # Square penalty for stronger effect
         loss += tf.reduce_mean(end_in_penalty + end_out_penalty)
         
         # Other nodes: >=1 in-degree and >=1 out-degree
@@ -362,13 +366,52 @@ class GraphProcessConstraints:
         
         # For END nodes: soft penalty on out-degree
         # Use ReLU to only penalize when out_degree > threshold
-        threshold = 0.5  # Allow some flexibility
+        threshold = 0  # No flexibility
         end_out_penalty = end_probs * tf.nn.relu(out_degrees - threshold)
         
         loss = tf.reduce_mean(end_out_penalty)
-        
         return loss
 
+    def edge_continuity_loss(self, adjacency, nodes):
+        """
+        Constraint: ensure edges continue from previously reached nodes.
+
+        Penalize soft cases where a node has outgoing edges but no incoming
+        edges (i.e., the edge would "start in the void") unless the node
+        is START. This encourages edges to chain: new arcs should originate
+        from nodes that were previously reached (or from START).
+
+        Args:
+            adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
+            nodes: Node matrix (batch, max_nodes, num_activities)
+
+        Returns:
+            Loss penalizing outgoing-from-unreached-node cases
+        """
+        # Sum over edge types
+        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
+
+        # Degrees
+        in_degrees = tf.reduce_sum(total_adj, axis=1)  # (batch, max_nodes)
+        out_degrees = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes)
+
+        # Soft indicators for having any in/out degree (gradient-friendly)
+        has_in = tf.nn.sigmoid((in_degrees - 0.1) * 10.0)
+        has_out = tf.nn.sigmoid((out_degrees - 0.1) * 10.0)
+
+        # START probabilities
+        start_probs = nodes[:, :, self.start_idx]
+
+        # Active nodes mask (not PAD)
+        active_mask = 1.0 - nodes[:, :, self.pad_idx]
+
+        # Penalize nodes that have outgoing edges but NO incoming edges and are not START
+        continuity_penalty = has_out * (1.0 - has_in) * (1.0 - start_probs) * active_mask
+
+        loss = tf.reduce_mean(continuity_penalty)
+
+        return loss
+    
     def end_uniqueness_loss(self, nodes):
         """
         Moderate constraint: Encourage one dominant END node per graph
@@ -620,6 +663,7 @@ class GraphProcessConstraints:
         node_on_path_loss = self.nodes_on_path_loss(adjacency, nodes)
         end_no_out_loss = self.end_no_outgoing_loss(adjacency, nodes)
         end_unique_loss = self.end_uniqueness_loss(nodes)
+        edge_continuity = self.edge_continuity_loss(adjacency, nodes)
 
         # Weighted sum
         total_loss = (
@@ -635,7 +679,8 @@ class GraphProcessConstraints:
             self.lambda_end_connect * end_connect_loss +
             self.lambda_node_on_path * node_on_path_loss +
             self.lambda_end_no_out * end_no_out_loss +
-            self.lambda_end_unique * end_unique_loss
+            self.lambda_end_unique * end_unique_loss +
+            self.lambda_edge_continuity * edge_continuity
         )
 
         return total_loss
@@ -664,5 +709,6 @@ class GraphProcessConstraints:
             'end_connect_loss': self.end_connectivity_loss(adjacency, nodes),
             'node_on_path_loss': self.nodes_on_path_loss(adjacency, nodes),
             'end_no_out_loss': self.end_no_outgoing_loss(adjacency, nodes),
-            'end_unique_loss': self.end_uniqueness_loss(nodes)
+            'end_unique_loss': self.end_uniqueness_loss(nodes),
+            'edge_continuity_loss': self.edge_continuity_loss(adjacency, nodes),
         }

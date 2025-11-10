@@ -62,16 +62,13 @@ for i in indices:
     # Create labels from node activities (original nodes)
     labels = {node: data['activity'] for node, data in G.nodes(data=True)}
 
-    # Collapse nodes by activity: build a new graph H where each node is an activity
-    activity_to_nodes = {}
-    for n, act in labels.items():
-        activity_to_nodes.setdefault(act, []).append(n)
-
-    activities = list(activity_to_nodes.keys())
+    # Use distinct nodes (default and only behavior)
+    activities = list(G.nodes())
+    activity_to_nodes = {n: [n] for n in G.nodes()}
 
     # Ensure START/END are included only if they actually appear in the graph
     # (some generators may add placeholders; keep visualization faithful to data)
-    activities = [a for a in activities if not (str(a).upper() in ("START", "END") and len(activity_to_nodes.get(a, [])) == 0)]
+    activities = [a for a in activities if not (str(labels.get(a, a)).upper() in ("START", "END") and len(activity_to_nodes.get(a, [])) == 0)]
     H = nx.DiGraph()
     for act in activities:
         H.add_node(act)
@@ -79,17 +76,17 @@ for i in indices:
     # Convert edges to activity pairs, preserving ALL duplicates and original order
     edge_pairs = []
     for u, v in edges_ordered:
-        au = labels.get(u, str(u))
-        av = labels.get(v, str(v))
+        au = u
+        av = v
         edge_pairs.append((au, av))
         # Add to H for layout purposes (duplicates will be handled in visualization)
         if not H.has_edge(au, av):
             H.add_edge(au, av)
 
-    # Remove START/END from the collapsed graph if they are isolated (no incident edges)
+    # Remove START/END from the graph if they are isolated (no incident edges)
     # This ensures we don't force-show START/END when they don't participate in any edge
-    start_activities = [a for a in activities if str(a).upper() == 'START']
-    end_activities = [a for a in activities if str(a).upper() == 'END']
+    start_activities = [a for a in activities if str(labels.get(a, a)).upper() == 'START']
+    end_activities = [a for a in activities if str(labels.get(a, a)).upper() == 'END']
 
     for s in start_activities:
         if H.has_node(s) and H.degree(s) == 0:
@@ -249,6 +246,9 @@ for i in indices:
     node_colors = [activity_color_map[a] for a in node_list]
     nx.draw_networkx_nodes(H, pos, nodelist=node_list, node_color=node_colors, node_size=900, ax=ax)
 
+    # Create node labels - show activity names
+    node_labels = {n: labels[n] for n in activities}
+
     # Track revealed edges for step mode (by index)
     revealed_edge_indices = set()
 
@@ -256,7 +256,7 @@ for i in indices:
         ax.clear()
         # redraw nodes
         nx.draw_networkx_nodes(H, pos, nodelist=node_list, node_color=node_colors, node_size=900, ax=ax)
-        nx.draw_networkx_labels(H, pos, labels={a: a for a in activities}, font_size=10, font_color='black', ax=ax)
+        nx.draw_networkx_labels(H, pos, labels=node_labels, font_size=10, font_color='black', ax=ax)
 
         # draw unrevealed edges in light gray, with per-edge curvature to avoid overlap
         for idx in range(len(edge_pairs)):
@@ -309,7 +309,7 @@ for i in indices:
             nx.draw_networkx_edges(H, pos, edgelist=[e], edge_color=[color], arrows=True, arrowsize=20, ax=ax, connectionstyle=f'arc3,rad={rad}')
 
     # Draw labels on activity-nodes with readable font
-    nx.draw_networkx_labels(H, pos, labels={a: a for a in activities}, font_size=10, font_color='black', ax=ax)
+    nx.draw_networkx_labels(H, pos, labels=node_labels, font_size=10, font_color='black', ax=ax)
 
     # Title: filename on top
     # title already set in redraw
@@ -318,9 +318,9 @@ for i in indices:
     # Each edge (including duplicates) has its own color in original file order
     if edge_pairs:
         handles = [Line2D([0], [0], color=pair_color_map[i], lw=3) for i in range(len(edge_pairs))]
-        labels = [f"{u} → {v}" for u, v in edge_pairs]
+        edge_legend_labels = [f"{labels[u]} → {labels[v]}" for u, v in edge_pairs]
         # Draw legend inside the dedicated legend axis so it's always visible
-        legend = legend_ax.legend(handles=handles, labels=labels, loc='center', frameon=True)
+        legend = legend_ax.legend(handles=handles, labels=edge_legend_labels, loc='center', frameon=True)
         # Color only the legend handles (markers/lines); keep text black for readability
         for idx, lh in enumerate(handles):
             try:

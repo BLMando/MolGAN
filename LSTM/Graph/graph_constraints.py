@@ -105,7 +105,7 @@ class GraphProcessConstraints:
         
         Strong enforcement with:
         1. Terminal positioning via attention (soft guidance to terminals)
-        2. Heavy squared penalty for END appearing at multiple positions
+        2. Penalize END appearing at NON-terminal positions
         3. Count constraint (sum should be ~1)
         4. Concentration penalty (max END probability should be high)
         5. Zero out-degree enforcement (END must have no outgoing edges)
@@ -129,7 +129,6 @@ class GraphProcessConstraints:
 
         # === COMPONENT 1: Terminal Positioning (identify best END position) ===
         # Find the terminal node (lowest out-degree among active nodes)
-        # This is a soft guidance, not a hard constraint
         terminal_score = active_mask * tf.nn.sigmoid(-(out_degrees - 0.1) * 20.0)
         attention_weights = tf.nn.softmax(terminal_score + 1e-10, axis=1)
         attention_weights_exp = tf.expand_dims(attention_weights, axis=-1)
@@ -139,10 +138,12 @@ class GraphProcessConstraints:
         end_at_best_terminal = weighted_nodes[:, self.end_idx]
         loss_positioning = -tf.reduce_mean(tf.math.log(end_at_best_terminal + 1e-10))
         
-        # === COMPONENT 2: Heavy penalty for END appearing at multiple positions ===
-        # Use squared penalty like START - penalize END probability at ALL positions
-        # Then we'll concentrate it at one position
-        loss_multiple = tf.reduce_mean(tf.square(end_probs))  # Penalize all END probs
+        # === COMPONENT 2: Penalize END at NON-terminal positions ===
+        # Instead of penalizing all END probs, only penalize END where out_degree > 0
+        # This allows END to appear at terminal nodes but not elsewhere
+        non_terminal_mask = tf.nn.sigmoid((out_degrees - 0.1) * 10.0)  # 1 if out_degree > 0
+        end_at_non_terminal = end_probs * non_terminal_mask
+        loss_non_terminal = tf.reduce_mean(tf.square(end_at_non_terminal))
         
         # === COMPONENT 3: Count constraint (sum should be ~1) ===
         end_count = tf.reduce_sum(end_probs, axis=1)  # (batch,)
@@ -151,14 +152,13 @@ class GraphProcessConstraints:
         # === COMPONENT 4: Concentration (one node should dominate) ===
         # Find max END probability and penalize if it's not high enough
         max_end_prob = tf.reduce_max(end_probs, axis=1)  # (batch,)
-        # Penalize if max END prob is less than 0.8 (strong concentration)
-        loss_concentration = tf.reduce_mean(tf.nn.relu(0.8 - max_end_prob))
+        # Penalize if max END prob is less than 0.7 (strong concentration but not too aggressive)
+        loss_concentration = tf.reduce_mean(tf.nn.relu(0.7 - max_end_prob))
         
         # Also penalize the second-highest END probability to ensure uniqueness
-        # Sort END probs and get second highest
         sorted_end_probs = tf.sort(end_probs, axis=1, direction='DESCENDING')
         second_highest = sorted_end_probs[:, 1]  # Get second highest value
-        loss_second = tf.reduce_mean(second_highest)  # Should be close to 0
+        loss_second = tf.reduce_mean(tf.square(second_highest))  # Should be close to 0
         
         # === COMPONENT 5: Zero Out-Degree Enforcement ===
         # Heavily penalize ANY out-degree for END nodes
@@ -166,14 +166,14 @@ class GraphProcessConstraints:
         loss_zero_out = tf.reduce_mean(end_out_penalty)
         
         # === COMBINED LOSS ===
-        # Weights balanced like START node loss
+        # Reduced weights to avoid over-constraining
         total_loss = (
             1.0 * loss_positioning +      # Soft guidance to terminals
-            3.0 * loss_multiple +         # Heavy penalty for multiple ENDs
-            2.0 * loss_count +            # Count constraint
-            2.0 * loss_concentration +    # High concentration
-            3.0 * loss_second +           # Penalize second-highest END prob
-            3.0 * loss_zero_out           # No out-edges
+            2.0 * loss_non_terminal +     # Penalize END at non-terminals
+            1.5 * loss_count +            # Count constraint (reduced from 2.0)
+            1.5 * loss_concentration +    # High concentration (reduced from 2.0)
+            2.0 * loss_second +           # Penalize second-highest END prob (reduced from 3.0)
+            2.0 * loss_zero_out           # No out-edges (reduced from 3.0)
         )
         
         return total_loss
@@ -295,31 +295,63 @@ class GraphProcessConstraints:
 
     def structural_validity_loss(self, adjacency):
         """
-        Constraint: Structural validity of process graphs
-
-        Encourages:
-        - No self-loops (except maybe for specific patterns)
-        - Reasonable number of edges
-
+        Constraint: Structural validity of process graphs - NO LOOPS ALLOWED
+        
+        Process graphs should be DAGs (Directed Acyclic Graphs).
+        This function penalizes loops with a balanced approach:
+        1. Self-loops (direct cycles) - highest priority
+        2. Bidirectional edges (A→B and B→A) - medium priority
+        3. General cycles via transitive closure - soft penalty
+        
         Args:
             adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
 
         Returns:
-            Loss penalizing invalid structures
+            Loss penalizing loops/cycles in the graph
         """
-        batch_size = tf.shape(adjacency)[0]
-        max_nodes = tf.shape(adjacency)[1]
-
-        # Penalize self-loops (diagonal elements)
-        # Sum over edge types
-        # (batch, max_nodes, max_nodes)
-        total_adj = tf.reduce_sum(adjacency, axis=-1)
-
-        # Extract diagonal (self-loops)
+        # Sum over edge types to get total adjacency
+        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
+        
+        # === COMPONENT 1: Self-loops (diagonal elements) ===
+        # Highest priority - these are never valid in process graphs
         diagonal = tf.linalg.diag_part(total_adj)  # (batch, max_nodes)
-        self_loop_penalty = tf.reduce_mean(diagonal)
-
-        return self_loop_penalty
+        loss_self_loops = tf.reduce_mean(diagonal)
+        
+        # === COMPONENT 2: 2-cycles (A→B and B→A) ===
+        # Check if edge exists in both directions
+        total_adj_T = tf.transpose(total_adj, perm=[0, 2, 1])  # Transpose
+        bidirectional = total_adj * total_adj_T  # Element-wise product
+        # Only count upper triangle to avoid double counting
+        indices = tf.range(tf.shape(total_adj)[1])
+        i_indices = tf.expand_dims(indices, axis=1)  # (max_nodes, 1)
+        j_indices = tf.expand_dims(indices, axis=0)  # (1, max_nodes)
+        upper_mask = tf.cast(i_indices < j_indices, tf.float32)  # (max_nodes, max_nodes)
+        upper_mask = tf.expand_dims(upper_mask, axis=0)  # (1, max_nodes, max_nodes)
+        
+        bidirectional_upper = bidirectional * upper_mask
+        loss_2cycles = tf.reduce_mean(bidirectional_upper)
+        
+        # === COMPONENT 3: Longer cycles via transitive closure (simplified) ===
+        # Soft detection - only compute up to 4 hops to reduce computation
+        # This catches most realistic cycles without being too aggressive
+        reachable = total_adj
+        for _ in range(4):  # Reduced from 8 to 4
+            reachable = tf.minimum(tf.matmul(reachable, total_adj) + reachable, 1.0)
+        
+        # Check diagonal of reachability matrix
+        # If reachable[i,i] > 0, there's a path from i to i (cycle)
+        reachable_diag = tf.linalg.diag_part(reachable)  # (batch, max_nodes)
+        loss_cycles = tf.reduce_mean(reachable_diag)
+        
+        # === COMBINED LOSS ===
+        # Reduced weights for softer enforcement
+        total_loss = (
+            2.0 * loss_self_loops +    # Direct self-loops (high priority but reduced from 3.0)
+            1.0 * loss_2cycles +       # Bidirectional edges (reduced from 2.0)
+            0.5 * loss_cycles          # General cycles (much reduced from 2.5 total)
+        )
+        
+        return total_loss
 
     # START part kept in start_node_loss (already has count constraint)
 

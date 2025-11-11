@@ -149,11 +149,11 @@ class GraphProcessConstraints:
         end_probs = weighted_nodes[:, self.end_idx]
         loss_encourage_end = -tf.reduce_mean(tf.math.log(end_probs + 1e-10))
         
-        # Soft penalty for END nodes with many outgoing edges (not zero tolerance)
+        # Penalty for END nodes with any outgoing edges (zero tolerance)
         end_node_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
-        # Only penalize if out_degree > 1 (allow some flexibility)
-        end_with_many_outgoing = end_node_probs * tf.nn.relu(outgoing_edges - 1.0)
-        loss_end_with_edges = tf.reduce_mean(end_with_many_outgoing)
+        # Penalize if out_degree > 0 (no flexibility)
+        end_with_any_outgoing = end_node_probs * tf.nn.relu(outgoing_edges - 0.0)
+        loss_end_with_edges = tf.reduce_mean(end_with_any_outgoing)
         
         return loss_encourage_end + 2.0 * loss_end_with_edges
 

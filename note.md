@@ -31,3 +31,9 @@ utilizzare tutte le proprietà degli instance_graph
 2) mostrare grafici --> mandare su teams
 3) bontà degli instance_graph --> articolo BIG --> più importante sulla generalization
 4) introdurre le feature temporanee 
+
+
+
+1) rimuove self-loop e ogni tipo di loop
+2) vedere quali vincoli sono ridondanti
+3) rimuove nodo START ed END mappati fisicamente

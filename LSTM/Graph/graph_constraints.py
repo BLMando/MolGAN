@@ -101,18 +101,14 @@ class GraphProcessConstraints:
 
     def end_node_loss(self, nodes, adjacency):
         """
-        UNIFIED END Constraint: Terminal positioning + zero out-edges + uniqueness
+        UNIFIED END Constraint: Strong enforcement like START node
         
-        Combines functionality of:
-        - end_node_loss (terminal positioning)
-        - end_no_outgoing_loss (zero out-degree enforcement)
-        - end_uniqueness_loss (concentration)
-        
-        Multi-level enforcement:
-        1. Identifies terminal nodes (out-degree = 0)
-        2. Encourages END label at terminals via soft attention
-        3. Heavily penalizes END at non-terminal nodes
-        4. Enforces single dominant END node
+        Strong enforcement with:
+        1. Terminal positioning via attention (soft guidance to terminals)
+        2. Heavy squared penalty for END appearing at multiple positions
+        3. Count constraint (sum should be ~1)
+        4. Concentration penalty (max END probability should be high)
+        5. Zero out-degree enforcement (END must have no outgoing edges)
 
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
@@ -125,44 +121,59 @@ class GraphProcessConstraints:
         total_adj = tf.reduce_sum(adjacency, axis=-1)
         out_degrees = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes)
         
-        # Get END node probabilities
+        # Get END node probabilities for all positions
         end_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
         
         # Mask for active nodes (not PAD)
         active_mask = 1.0 - nodes[:, :, self.pad_idx]  # (batch, max_nodes)
 
-        # === COMPONENT 1: Terminal Positioning (soft attention) ===
-        # Identify terminal nodes (out-degree ≈ 0)
+        # === COMPONENT 1: Terminal Positioning (identify best END position) ===
+        # Find the terminal node (lowest out-degree among active nodes)
+        # This is a soft guidance, not a hard constraint
         terminal_score = active_mask * tf.nn.sigmoid(-(out_degrees - 0.1) * 20.0)
         attention_weights = tf.nn.softmax(terminal_score + 1e-10, axis=1)
-        attention_weights = tf.expand_dims(attention_weights, axis=-1)
+        attention_weights_exp = tf.expand_dims(attention_weights, axis=-1)
         
-        # Encourage END at terminal positions
-        weighted_nodes = tf.reduce_sum(nodes * attention_weights, axis=1)
-        end_at_terminal = weighted_nodes[:, self.end_idx]
-        loss_positioning = -tf.reduce_mean(tf.math.log(end_at_terminal + 1e-10))
+        # Weighted sum - encourage END at most terminal position
+        weighted_nodes = tf.reduce_sum(nodes * attention_weights_exp, axis=1)
+        end_at_best_terminal = weighted_nodes[:, self.end_idx]
+        loss_positioning = -tf.reduce_mean(tf.math.log(end_at_best_terminal + 1e-10))
         
-        # === COMPONENT 2: Zero Out-Degree Enforcement (hard penalty) ===
-        # Penalize ANY out-degree for END nodes
+        # === COMPONENT 2: Heavy penalty for END appearing at multiple positions ===
+        # Use squared penalty like START - penalize END probability at ALL positions
+        # Then we'll concentrate it at one position
+        loss_multiple = tf.reduce_mean(tf.square(end_probs))  # Penalize all END probs
+        
+        # === COMPONENT 3: Count constraint (sum should be ~1) ===
+        end_count = tf.reduce_sum(end_probs, axis=1)  # (batch,)
+        loss_count = tf.reduce_mean(tf.square(end_count - 1.0))
+        
+        # === COMPONENT 4: Concentration (one node should dominate) ===
+        # Find max END probability and penalize if it's not high enough
+        max_end_prob = tf.reduce_max(end_probs, axis=1)  # (batch,)
+        # Penalize if max END prob is less than 0.8 (strong concentration)
+        loss_concentration = tf.reduce_mean(tf.nn.relu(0.8 - max_end_prob))
+        
+        # Also penalize the second-highest END probability to ensure uniqueness
+        # Sort END probs and get second highest
+        sorted_end_probs = tf.sort(end_probs, axis=1, direction='DESCENDING')
+        second_highest = sorted_end_probs[:, 1]  # Get second highest value
+        loss_second = tf.reduce_mean(second_highest)  # Should be close to 0
+        
+        # === COMPONENT 5: Zero Out-Degree Enforcement ===
+        # Heavily penalize ANY out-degree for END nodes
         end_out_penalty = end_probs * out_degrees
         loss_zero_out = tf.reduce_mean(end_out_penalty)
         
-        # === COMPONENT 3: Uniqueness (concentration) ===
-        # Count constraint: sum of END probs should be ~1
-        end_count = tf.reduce_sum(end_probs, axis=1)
-        loss_count = tf.reduce_mean(tf.abs(end_count - 1.0))
-        
-        # Concentration: one node should dominate
-        max_end_prob = tf.reduce_max(end_probs, axis=1)
-        loss_concentration = tf.reduce_mean(tf.nn.relu(0.5 - max_end_prob))
-        
         # === COMBINED LOSS ===
-        # Weights balance different aspects
+        # Weights balanced like START node loss
         total_loss = (
-            1.0 * loss_positioning +     # Encourage END at terminals
-            3.0 * loss_zero_out +        # Strict: no out-edges
-            1.0 * loss_count +           # One END per graph
-            1.0 * loss_concentration     # Concentrated probability
+            1.0 * loss_positioning +      # Soft guidance to terminals
+            3.0 * loss_multiple +         # Heavy penalty for multiple ENDs
+            2.0 * loss_count +            # Count constraint
+            2.0 * loss_concentration +    # High concentration
+            3.0 * loss_second +           # Penalize second-highest END prob
+            3.0 * loss_zero_out           # No out-edges
         )
         
         return total_loss

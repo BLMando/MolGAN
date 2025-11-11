@@ -46,18 +46,13 @@ class GraphProcessGAN(keras.Model):
                  lambda_gp=10.0,
                  lambda_constraint=0.1,
                  lambda_start=3.0,
-                 lambda_end=2.0,
+                 lambda_end=10.0,
                  lambda_frequency=1.0,
-                 lambda_connectivity=0.5,
+                 lambda_connectivity=5.0,
                  lambda_structure=5.0,
-                 lambda_unique=5.0,
                  lambda_degree=5.0,
                  lambda_path=3.0,
-                 lambda_start_connect=5.0,
-                 lambda_end_connect=8.0,
                  lambda_node_on_path=5.0,
-                 lambda_end_no_out=10.0,
-                 lambda_end_unique=8.0,
                  # Temperature scheduling
                  temp_start=5.0,
                  temp_min=0.5,
@@ -80,19 +75,14 @@ class GraphProcessGAN(keras.Model):
             n_critic: Number of discriminator updates per generator update
             lambda_gp: Gradient penalty coefficient
             lambda_constraint: Constraint loss coefficient
-            lambda_start: START node constraint weight
-            lambda_end: END node constraint weight
+            lambda_start: START node constraint weight (4-component)
+            lambda_end: UNIFIED END constraint weight (terminal pos + zero out-edges + uniqueness)
             lambda_frequency: Activity frequency matching weight
-            lambda_connectivity: General connectivity weight
-            lambda_structure: Structural validity weight
-            lambda_unique: Unique START/END weight
-            lambda_degree: Degree constraint weight
-            lambda_path: Path existence weight
-            lambda_start_connect: START connectivity weight
-            lambda_end_connect: END connectivity weight
-            lambda_node_on_path: Nodes on path weight
-            lambda_end_no_out: END no outgoing edges weight (CRITICAL)
-            lambda_end_unique: END uniqueness weight (CRITICAL)
+            lambda_connectivity: UNIFIED connectivity weight (general + START/END + edge continuity)
+            lambda_structure: Structural validity weight (no self-loops)
+            lambda_degree: Degree constraint weight (soft in/out rules)
+            lambda_path: Path existence weight (START→END reachability)
+            lambda_node_on_path: Nodes on path weight (all nodes must be on START→END paths)
             temp_start: Initial Gumbel-Softmax temperature
             temp_min: Minimum temperature
             temp_decay: Temperature decay rate
@@ -132,7 +122,7 @@ class GraphProcessGAN(keras.Model):
             dropout_rate=discriminator_dropout
         )
 
-        # Constraints
+        # Constraints (simplified after merging)
         self.constraints = GraphProcessConstraints(
             start_idx=start_idx,
             end_idx=end_idx,
@@ -142,14 +132,9 @@ class GraphProcessGAN(keras.Model):
             lambda_frequency=lambda_frequency,
             lambda_connectivity=lambda_connectivity,
             lambda_structure=lambda_structure,
-            lambda_unique=lambda_unique,
             lambda_degree=lambda_degree,
             lambda_path=lambda_path,
-            lambda_start_connect=lambda_start_connect,
-            lambda_end_connect=lambda_end_connect,
-            lambda_node_on_path=lambda_node_on_path,
-            lambda_end_no_out=lambda_end_no_out,
-            lambda_end_unique=lambda_end_unique
+            lambda_node_on_path=lambda_node_on_path
         )
 
         # Metrics (tracked automatically by Keras)

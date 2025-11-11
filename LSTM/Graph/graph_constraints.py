@@ -189,7 +189,7 @@ class GraphProcessConstraints:
         """
         Soft degree constraints for process graphs:
         - START: exactly 0 in-degree, at least 1 out-degree
-        - END: exactly 1 in-degree, exactly 0 out-degree
+        - END: at least 1 in-degree, exactly 0 out-degree
         - Other nodes: at least 1 in-degree and 1 out-degree
         
         Uses SOFT penalties that allow gradual learning
@@ -221,12 +221,10 @@ class GraphProcessConstraints:
         start_out_penalty = start_probs * tf.nn.relu(1.0 - out_degrees)  # Only penalize if < 1
         loss += tf.reduce_mean(start_in_penalty + start_out_penalty)
         
-        # END constraints: EXACTLY 1 in-degree, EXACTLY 0 out-degree
-        # Stronger penalties for END to ensure uniqueness and finality
-        # Penalize deviation from exactly 1 in-degree
-        end_in_penalty = end_probs * tf.square(in_degrees - 1.0)  # Square penalty for stronger effect
-        # Penalize any out-degree (must be exactly 0)
-        end_out_penalty = end_probs * tf.square(out_degrees)  # Square penalty for stronger effect
+        # END constraints: >=1 in-degree, 0 out-degree
+        # More lenient: allow some flexibility during training
+        end_in_penalty = end_probs * tf.nn.relu(1.0 - in_degrees)  # Only penalize if < 1
+        end_out_penalty = end_probs * out_degrees  # Penalize any out-degree but softly
         loss += tf.reduce_mean(end_in_penalty + end_out_penalty)
         
         # Other nodes: >=1 in-degree and >=1 out-degree

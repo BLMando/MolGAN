@@ -113,3 +113,4 @@ data/*.pkl.gz
 output/
 output_keras/
 output_graph_gan/
+docs/

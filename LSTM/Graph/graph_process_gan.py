@@ -52,6 +52,7 @@ class GraphProcessGAN(keras.Model):
                  lambda_degree=5.0,
                  lambda_path=3.0,
                  lambda_node_on_path=5.0,
+                 lambda_sparsity=0.0,
                  # Temperature scheduling
                  temp_start=5.0,
                  temp_min=0.5,
@@ -81,6 +82,7 @@ class GraphProcessGAN(keras.Model):
             lambda_degree: Degree constraint weight (soft in/out rules)
             lambda_path: Path existence weight (START→END reachability)
             lambda_node_on_path: Nodes on path weight (all nodes must be on START→END paths)
+            lambda_sparsity: Sparsity weight (encourage varying node counts)
             temp_start: Initial Gumbel-Softmax temperature
             temp_min: Minimum temperature
             temp_decay: Temperature decay rate
@@ -129,7 +131,8 @@ class GraphProcessGAN(keras.Model):
             lambda_structure=lambda_structure,
             lambda_degree=lambda_degree,
             lambda_path=lambda_path,
-            lambda_node_on_path=lambda_node_on_path
+            lambda_node_on_path=lambda_node_on_path,
+            lambda_sparsity=lambda_sparsity
         )
 
         # Metrics (tracked automatically by Keras)

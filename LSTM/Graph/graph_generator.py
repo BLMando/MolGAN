@@ -60,10 +60,10 @@ class GraphGenerator(keras.Model):
                     layers.Dropout(dropout_rate, name=f'dropout_{i}')
                 )
 
-        # Adjacency matrix branch (2 channels: EDGE, NO_EDGE)
-        adj_output_dim = max_nodes * max_nodes * 2
+        # Adjacency matrix branch (binary with sigmoid)
+        adj_output_dim = max_nodes * max_nodes
         self.adjacency_head = keras.Sequential([
-            layers.Dense(adj_output_dim, activation=None, name='adj_logits')
+            layers.Dense(adj_output_dim, activation='sigmoid', name='adj_output')
         ], name='adjacency_head')
 
         # Node matrix branch
@@ -96,11 +96,11 @@ class GraphGenerator(keras.Model):
             else:
                 h = layer(h)
 
-        # Reshape adjacency logits to (batch, max_nodes, max_nodes, 2)
-        adj_logits = self.adjacency_head(h)
-        adj_logits = tf.reshape(
-            adj_logits,
-            (batch_size, self.max_nodes, self.max_nodes, 2)
+        # Reshape adjacency output to (batch, max_nodes, max_nodes)
+        adjacency = self.adjacency_head(h)
+        adjacency = tf.reshape(
+            adjacency,
+            (batch_size, self.max_nodes, self.max_nodes)
         )
 
         # Transform node_logits into node matrix logits of the defined shape: batch, max_nodes, num_activities
@@ -110,14 +110,7 @@ class GraphGenerator(keras.Model):
             (batch_size, self.max_nodes, self.num_activities)
         )
 
-        # Apply Gumbel-Softmax for differentiable sampling
-        # For adjacency: sample over [EDGE, NO_EDGE]
-        adjacency_2ch = gumbel_softmax(
-            adj_logits, temperature=temperature, hard=hard, axis=-1)
-
-        # Extract only EDGE channel (index 0) to get binary adjacency
-        adjacency = adjacency_2ch[:, :, :, 0]  # (batch, nodes, nodes)
-        
+        # Apply Gumbel-Softmax for nodes (still categorical)
         nodes = gumbel_softmax(
             node_logits, temperature=temperature, hard=hard, axis=-1)
 

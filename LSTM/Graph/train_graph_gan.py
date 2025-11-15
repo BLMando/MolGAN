@@ -244,7 +244,9 @@ def train_graph_gan(
     n_critic=3,
     lambda_gp=10.0,
     lambda_constraint=0.5,
+    lambda_structure=10.0,
     lambda_degree=10.0,
+    lambda_sparsity=0.0,
     batch_size=32,
     epochs=500,
     validation_split=0.1,
@@ -277,7 +279,9 @@ def train_graph_gan(
         n_critic: Discriminator updates per generator update
         lambda_gp: Gradient penalty weight
         lambda_constraint: Constraint loss weight
+        lambda_structure: Structural validity (loop prevention) weight
         lambda_degree: Degree constraint weight
+        lambda_sparsity: Sparsity (varying node counts) weight
         batch_size: Training batch size
         epochs: Maximum epochs
         validation_split: Fraction of data for validation
@@ -403,7 +407,9 @@ def train_graph_gan(
         n_critic=n_critic,
         lambda_gp=lambda_gp,
         lambda_constraint=lambda_constraint,
+        lambda_structure=lambda_structure,
         lambda_degree=lambda_degree,
+        lambda_sparsity=lambda_sparsity,
         temp_start=temp_start,
         temp_min=temp_min,
         temp_decay=temp_decay

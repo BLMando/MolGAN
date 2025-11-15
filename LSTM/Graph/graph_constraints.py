@@ -36,7 +36,8 @@ class GraphProcessConstraints:
                  lambda_structure=5.0,
                  lambda_degree=5.0,
                  lambda_path=3.0,
-                 lambda_node_on_path=5.0):
+                 lambda_node_on_path=5.0,
+                 lambda_sparsity=0.0):
         """
         Args:
             start_idx: Index of START activity
@@ -44,6 +45,7 @@ class GraphProcessConstraints:
             activity_frequencies: Target activity frequency distribution
             pad_idx: Index of PAD token
             lambda_*: Weights for different constraint losses
+            lambda_sparsity: Weight for sparsity loss (encourages varying node counts)
         """
         self.start_idx = start_idx
         self.end_idx = end_idx
@@ -60,6 +62,7 @@ class GraphProcessConstraints:
         self.lambda_degree = lambda_degree
         self.lambda_path = lambda_path
         self.lambda_node_on_path = lambda_node_on_path
+        self.lambda_sparsity = lambda_sparsity
 
     def start_node_loss(self, nodes):
         """
@@ -292,10 +295,10 @@ class GraphProcessConstraints:
         Constraint: Structural validity of process graphs - NO LOOPS ALLOWED
         
         Process graphs should be DAGs (Directed Acyclic Graphs).
-        This function penalizes loops with a balanced approach:
-        1. Self-loops (direct cycles) - highest priority
-        2. Bidirectional edges (A→B and B→A) - medium priority
-        3. General cycles via transitive closure - soft penalty
+        This function penalizes loops with STRONG enforcement:
+        1. Self-loops (direct cycles) - VERY high priority
+        2. Bidirectional edges (A→B and B→A) - high priority
+        3. General cycles via transitive closure - medium priority
         
         Args:
             adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
@@ -308,7 +311,7 @@ class GraphProcessConstraints:
         # === COMPONENT 1: Self-loops (diagonal elements) ===
         # Highest priority - these are never valid in process graphs
         diagonal = tf.linalg.diag_part(adjacency)  # (batch, max_nodes)
-        loss_self_loops = tf.reduce_mean(diagonal)
+        loss_self_loops = tf.reduce_mean(tf.square(diagonal))  # Squared for stronger penalty
         
         # === COMPONENT 2: 2-cycles (A→B and B→A) ===
         # Check if edge exists in both directions
@@ -322,31 +325,82 @@ class GraphProcessConstraints:
         upper_mask = tf.expand_dims(upper_mask, axis=0)  # (1, max_nodes, max_nodes)
         
         bidirectional_upper = bidirectional * upper_mask
-        loss_2cycles = tf.reduce_mean(bidirectional_upper)
+        loss_2cycles = tf.reduce_mean(tf.square(bidirectional_upper))  # Squared for stronger penalty
         
-        # === COMPONENT 3: Longer cycles via transitive closure (simplified) ===
-        # Soft detection - only compute up to 4 hops to reduce computation
-        # This catches most realistic cycles without being too aggressive
+        # === COMPONENT 3: Longer cycles via transitive closure ===
+        # Compute up to 6 hops to catch longer cycles
         reachable = adjacency
-        for _ in range(4):  # Reduced from 8 to 4
+        for _ in range(6):  # Increased from 4 to 6 for better cycle detection
             reachable = tf.minimum(tf.matmul(reachable, adjacency) + reachable, 1.0)
         
         # Check diagonal of reachability matrix
         # If reachable[i,i] > 0, there's a path from i to i (cycle)
         reachable_diag = tf.linalg.diag_part(reachable)  # (batch, max_nodes)
-        loss_cycles = tf.reduce_mean(reachable_diag)
+        loss_cycles = tf.reduce_mean(tf.square(reachable_diag))  # Squared for stronger penalty
         
         # === COMBINED LOSS ===
-        # Reduced weights for softer enforcement
+        # INCREASED weights for stronger loop prevention
         total_loss = (
-            2.0 * loss_self_loops +    # Direct self-loops (high priority but reduced from 3.0)
-            1.0 * loss_2cycles +       # Bidirectional edges (reduced from 2.0)
-            0.5 * loss_cycles          # General cycles (much reduced from 2.5 total)
+            10.0 * loss_self_loops +    # Self-loops (much higher than before)
+            5.0 * loss_2cycles +        # Bidirectional edges (much higher)
+            3.0 * loss_cycles           # General cycles (higher)
         )
         
         return total_loss
 
     # START part kept in start_node_loss (already has count constraint)
+
+    def sparsity_loss(self, nodes, adjacency):
+        """
+        Encourage varying graph sizes by penalizing using all available nodes
+        
+        This creates pressure to generate graphs with different node counts,
+        making PAD tokens more prominent when graphs should be smaller.
+        
+        Args:
+            nodes: Node matrix (batch, max_nodes, num_activities)
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
+            
+        Returns:
+            Loss encouraging sparse graphs with varying sizes
+        """
+        # Count active (non-PAD) nodes per graph
+        active_mask = 1.0 - nodes[:, :, self.pad_idx]  # (batch, max_nodes)
+        num_active_nodes = tf.reduce_sum(active_mask, axis=1)  # (batch,)
+        
+        # Penalize using too many nodes (push towards smaller graphs)
+        # Use a soft quadratic penalty that increases with node count
+        max_nodes = tf.cast(tf.shape(nodes)[1], tf.float32)
+        usage_ratio = num_active_nodes / max_nodes  # (batch,) - ratio of nodes used
+        
+        # Penalize high usage (> 60% of max_nodes)
+        # This encourages the generator to use fewer nodes when possible
+        target_ratio = 0.6  # Target using around 60% of available nodes
+        loss_overuse = tf.reduce_mean(tf.nn.relu(usage_ratio - target_ratio) ** 2)
+        
+        # Encourage variance in graph sizes across the batch
+        # Low variance means all graphs have similar size (bad)
+        mean_usage = tf.reduce_mean(usage_ratio)
+        variance_usage = tf.reduce_mean(tf.square(usage_ratio - mean_usage))
+        # Penalize low variance (want diversity)
+        min_variance = 0.02  # Minimum desired variance in usage ratios
+        loss_variance = tf.nn.relu(min_variance - variance_usage)
+        
+        # Also penalize nodes that are "barely active" (probabilistic PAD)
+        # Encourage nodes to be either clearly active or clearly PAD
+        pad_probs = nodes[:, :, self.pad_idx]  # (batch, max_nodes)
+        # Penalize values in middle range [0.2, 0.8] - want clear decisions
+        ambiguous = tf.nn.relu(0.8 - pad_probs) * tf.nn.relu(pad_probs - 0.2)
+        loss_ambiguity = tf.reduce_mean(ambiguous)
+        
+        # Combine components
+        total_loss = (
+            2.0 * loss_overuse +      # Penalize using too many nodes
+            1.0 * loss_variance +      # Encourage size diversity
+            0.5 * loss_ambiguity       # Encourage clear PAD decisions
+        )
+        
+        return total_loss
 
     def connectivity_loss(self, adjacency, nodes):
         """
@@ -563,6 +617,7 @@ class GraphProcessConstraints:
         degree_loss = self.degree_constraint_loss(adjacency, nodes)
         path_loss = self.path_existence_loss(adjacency, nodes)
         node_on_path_loss = self.nodes_on_path_loss(adjacency, nodes)
+        sparsity_loss = self.sparsity_loss(nodes, adjacency)
 
         # Weighted sum
         total_loss = (
@@ -573,7 +628,8 @@ class GraphProcessConstraints:
             self.lambda_structure * struct_loss +
             self.lambda_degree * degree_loss +
             self.lambda_path * path_loss +
-            self.lambda_node_on_path * node_on_path_loss
+            self.lambda_node_on_path * node_on_path_loss +
+            self.lambda_sparsity * sparsity_loss
         )
 
         return total_loss
@@ -598,4 +654,5 @@ class GraphProcessConstraints:
             'degree_loss': self.degree_constraint_loss(adjacency, nodes),
             'path_loss': self.path_existence_loss(adjacency, nodes),
             'node_on_path_loss': self.nodes_on_path_loss(adjacency, nodes),
+            'sparsity_loss': self.sparsity_loss(nodes, adjacency),
         }

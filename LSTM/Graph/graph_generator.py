@@ -102,7 +102,7 @@ class GraphGenerator(keras.Model):
             else:
                 h = layer(h)
 
-        # Generate adjacency matrix logits (with NO_EDGE channel)
+        # Transform adj_logits into adjacency matrix logits of the defined shape: batch, max_nodes, max_nodes
         adj_logits = self.adjacency_head(h)
         adj_logits = tf.reshape(
             adj_logits,
@@ -110,7 +110,7 @@ class GraphGenerator(keras.Model):
              self.num_edge_types_with_no_edge)
         )
 
-        # Generate node matrix logits
+        # Transform node_logits into node matrix logits of the defined shape: batch, max_nodes, num_activities
         node_logits = self.node_head(h)
         node_logits = tf.reshape(
             node_logits,

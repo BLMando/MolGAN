@@ -329,7 +329,8 @@ def train_graph_gan(
     # Get matrices
     adjacency_matrices = np.array(dataset.adjacency_matrices)
     node_matrices = np.array(dataset.node_matrices)
-    num_edge_types = dataset.num_edge_types
+    #num_edge_types = dataset.num_edge_types
+    num_edge_types = 1
 
     print(f'  Adjacency shape: {adjacency_matrices.shape}')
     print(f'  Nodes shape: {node_matrices.shape}')

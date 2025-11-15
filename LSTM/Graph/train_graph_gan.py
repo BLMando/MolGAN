@@ -48,10 +48,19 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename):
         
         f.write("\n")
         
-        # Write edges (from adjacency matrix, any edge type present)
+        # Write edges (support both binary adjacency and multi-channel)
         for source in range(max_nodes):
             for target in range(max_nodes):
-                if np.sum(adj_matrix[source, target, :]) > 0.5:  # At least one edge type present
+                # Support 2D binary adjacency or 3D multi-channel adjacency
+                if adj_matrix.ndim == 2:
+                    has_edge = adj_matrix[source, target] > 0.5
+                elif adj_matrix.ndim == 3:
+                    has_edge = np.sum(adj_matrix[source, target, :]) > 0.5
+                else:
+                    # Fallback: treat any non-zero as edge
+                    has_edge = np.any(adj_matrix[source, target] > 0)
+
+                if has_edge:
                     f.write(f"Edge {source} {target}\n")
 
 # Add parent directory to path
@@ -329,12 +338,11 @@ def train_graph_gan(
     # Get matrices
     adjacency_matrices = np.array(dataset.adjacency_matrices)
     node_matrices = np.array(dataset.node_matrices)
-    #num_edge_types = dataset.num_edge_types
-    num_edge_types = 1
+    #num_edge_types = dataset.num_edge_types  # Not needed anymore (binary adjacency)
 
     print(f'  Adjacency shape: {adjacency_matrices.shape}')
     print(f'  Nodes shape: {node_matrices.shape}')
-    print(f'  Edge types: {num_edge_types}')
+    # print(f'  Edge types: {num_edge_types}')  # No longer applicable (binary)
 
     # Compute activity frequencies for constraints
     activity_counts = np.sum(node_matrices, axis=(0, 1))
@@ -382,7 +390,6 @@ def train_graph_gan(
 
     gan = GraphProcessGAN(
         max_nodes=max_nodes,
-        num_edge_types=num_edge_types,
         num_activities=num_activities,
         start_idx=start_idx,
         end_idx=end_idx,
@@ -493,7 +500,7 @@ def train_graph_gan(
     # Save metadata
     metadata = {
         'num_activities': num_activities,
-        'num_edge_types': num_edge_types,
+        # 'num_edge_types': num_edge_types,  # Not applicable (binary adjacency)
         'max_nodes': max_nodes,
         'vocab': vocab,
         'activity_frequencies': activity_frequencies.tolist(),

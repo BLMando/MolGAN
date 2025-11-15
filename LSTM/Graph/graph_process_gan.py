@@ -28,7 +28,6 @@ class GraphProcessGAN(keras.Model):
 
     def __init__(self,
                  max_nodes,
-                 num_edge_types,
                  num_activities,
                  start_idx,
                  end_idx,
@@ -61,7 +60,6 @@ class GraphProcessGAN(keras.Model):
         """
         Args:
             max_nodes: Maximum number of nodes in graph
-            num_edge_types: Number of edge types
             num_activities: Number of activity types
             start_idx: Index of START activity
             end_idx: Index of END activity
@@ -91,7 +89,6 @@ class GraphProcessGAN(keras.Model):
         super(GraphProcessGAN, self).__init__(name=name)
 
         self.max_nodes = max_nodes
-        self.num_edge_types = num_edge_types
         self.num_activities = num_activities
         self.n_critic = n_critic
         self.lambda_gp = lambda_gp
@@ -103,19 +100,17 @@ class GraphProcessGAN(keras.Model):
         self.temp_min = temp_min
         self.temp_decay = temp_decay
 
-        # Build generator
+        # Build generator (no num_edge_types)
         self.generator = GraphGenerator(
             max_nodes=max_nodes,
-            num_edge_types=num_edge_types,
             num_activities=num_activities,
             noise_dim=noise_dim,
             hidden_dims=generator_hidden_dims,
             dropout_rate=generator_dropout
         )
 
-        # Build discriminator
+        # Build discriminator (no num_edge_types)
         self.discriminator = GraphDiscriminator(
-            num_edge_types=num_edge_types,
             num_activities=num_activities,
             rgcn_hidden_dims=rgcn_hidden_dims,
             mlp_hidden_dims=mlp_hidden_dims,
@@ -335,7 +330,7 @@ class GraphProcessGAN(keras.Model):
             hard: Use hard samples (one-hot)
 
         Returns:
-            adjacency: Generated adjacency matrices (num_samples, max_nodes, max_nodes, edge_types)
+            adjacency: Generated adjacency matrices (num_samples, max_nodes, max_nodes) - binary adjacency
             nodes: Generated node matrices (num_samples, max_nodes, num_activities)
         """
         batch_size = 128

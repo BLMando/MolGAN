@@ -2,8 +2,7 @@
 Graph Dataset - Convert instance graphs to adjacency matrices and node features
 
 Handles:
-- Adjacency matrix construction with multiple edge types
-- Automatic parallelism detection (AND-split/AND-join)
+- Binary adjacency matrix construction (no edge types)
 - Node feature matrices
 - Padding for variable-length graphs
 """
@@ -20,84 +19,10 @@ def log(msg: str):
     print(f'[{timestamp}] {msg}')
 
 
-class EdgeTypeClassifier:
-    """
-    Classify edge types from graph structure
-
-    Edge types:
-    - SEQUENCE: normal sequential flow
-    - AND_SPLIT: parallel split (multiple outgoing edges)
-    - AND_JOIN: parallel join (multiple incoming edges)
-    - LOOP: back edge
-    - XOR: choice (can be inferred from patterns)
-    """
-
-    def __init__(self):
-        self.edge_types = {
-            'SEQUENCE': 0,
-            'AND_SPLIT': 1,
-            'AND_JOIN': 2,
-            'LOOP': 3,
-            'XOR': 4
-        }
-        self.num_types = len(self.edge_types)
-
-    def classify_edges(self, edges: List[Dict]) -> Dict:
-        """
-        Classify all edges in a trace
-
-        Args:
-            edges: List of edge dicts with 'source' and 'target'
-
-        Returns:
-            Dict mapping (source, target) -> edge_type_idx
-        """
-        edge_classification = {}
-
-        # Group by source (for AND-split detection)
-        outgoing = {}
-        for edge in edges:
-            src = edge['source']
-            if src not in outgoing:
-                outgoing[src] = []
-            outgoing[src].append(edge)
-
-        # Group by target (for AND-join detection)
-        incoming = {}
-        for edge in edges:
-            tgt = edge['target']
-            if tgt not in incoming:
-                incoming[tgt] = []
-            incoming[tgt].append(edge)
-
-        # Classify each edge
-        for edge in edges:
-            src = edge['source']
-            tgt = edge['target']
-            key = (src, tgt)
-
-            # Check for loop (back edge)
-            if tgt < src:
-                edge_classification[key] = self.edge_types['LOOP']
-
-            # Check for AND-split (multiple outgoing)
-            elif len(outgoing[src]) > 1:
-                edge_classification[key] = self.edge_types['AND_SPLIT']
-
-            # Check for AND-join (multiple incoming)
-            elif len(incoming[tgt]) > 1:
-                edge_classification[key] = self.edge_types['AND_JOIN']
-
-            # Default: SEQUENCE
-            else:
-                edge_classification[key] = self.edge_types['SEQUENCE']
-
-        return edge_classification
-
-
 class GraphDataset:
     """
-    Convert instance graphs to matrices for GAN training
+    Convert instance graphs to binary adjacency matrices for GAN training
+    (No edge type classification - binary edges only)
     """
 
     def __init__(self,
@@ -122,9 +47,9 @@ class GraphDataset:
         self.verbose = verbose
         self.num_activities = len(activity_to_idx)
 
-        # Edge type classifier
-        self.edge_classifier = EdgeTypeClassifier()
-        self.num_edge_types = self.edge_classifier.num_types
+        # No edge type classification (binary adjacency)
+        # self.edge_classifier = EdgeTypeClassifier()  # REMOVED
+        # self.num_edge_types = self.edge_classifier.num_types  # REMOVED
 
         # Preprocess all traces
         self.adjacency_matrices = []
@@ -176,19 +101,16 @@ class GraphDataset:
 
     def _build_adjacency(self, trace: Dict, node_id_to_idx: Dict) -> np.ndarray:
         """
-        Build multi-channel adjacency matrix
+        Build binary adjacency matrix
 
         Returns:
-            Adjacency matrix of shape (max_nodes, max_nodes, num_edge_types)
+            Adjacency matrix of shape (max_nodes, max_nodes) - binary
         """
-        adj = np.zeros((self.max_nodes, self.max_nodes,
-                       self.num_edge_types), dtype=np.float32)
+        adj = np.zeros((self.max_nodes, self.max_nodes), dtype=np.float32)
 
-        # Classify all edges
+        # Fill adjacency matrix with binary edges
         edges = trace['edges']
-        edge_classifications = self.edge_classifier.classify_edges(edges)
 
-        # Fill adjacency matrix
         for edge in edges:
             src_id = edge['source']
             tgt_id = edge['target']
@@ -200,13 +122,9 @@ class GraphDataset:
             src_idx = node_id_to_idx[src_id]
             tgt_idx = node_id_to_idx[tgt_id]
 
-            # Get edge type
-            edge_type = edge_classifications.get((src_id, tgt_id),
-                                                 self.edge_classifier.edge_types['SEQUENCE'])
-
-            # Set adjacency
+            # Set binary adjacency (no edge type)
             if src_idx < self.max_nodes and tgt_idx < self.max_nodes:
-                adj[src_idx, tgt_idx, edge_type] = 1.0
+                adj[src_idx, tgt_idx] = 1.0
 
         return adj
 
@@ -320,14 +238,11 @@ class GraphDataset:
             activity = self.idx_to_activity[activity_idx]
             print(f"  Position {i}: {activity}")
 
-        print('\nAdjacency matrix (non-zero edges):')
+        print('\nAdjacency matrix (edges):')
         for i in range(self.max_nodes):
             for j in range(self.max_nodes):
-                for k in range(self.num_edge_types):
-                    if adj[i, j, k] > 0:
-                        edge_type = list(
-                            self.edge_classifier.edge_types.keys())[k]
-                        print(f"  {i} -> {j} (type: {edge_type})")
+                if adj[i, j] > 0:
+                    print(f"  {i} -> {j}")
 
         if self.include_features and self.feature_matrices is not None:
             features = self.feature_matrices[idx]
@@ -341,20 +256,25 @@ class GraphDataset:
     def get_statistics(self) -> Dict:
         """Get dataset statistics"""
         # Count edge types
-        edge_type_counts = {}
-        for edge_type, idx in self.edge_classifier.edge_types.items():
-            count = np.sum(self.adjacency_matrices[:, :, :, idx])
-            edge_type_counts[edge_type] = int(count)
+        # No edge type classification (binary only)
+        # edge_type_counts = {}
+        # for edge_type, idx in self.edge_classifier.edge_types.items():
+        #     count = np.sum(self.adjacency_matrices[:, :, :, idx])
+        #     edge_type_counts[edge_type] = int(count)
 
         # Activity frequencies
         activity_freqs = self.compute_activity_frequencies()
 
+        # Total edge count (binary)
+        total_edges = int(np.sum(self.adjacency_matrices))
+
         stats = {
             'num_traces': len(self.traces),
             'num_activities': self.num_activities,
-            'num_edge_types': self.num_edge_types,
+            # 'num_edge_types': self.num_edge_types,  # Not applicable
             'max_nodes': self.max_nodes,
-            'edge_type_counts': edge_type_counts,
+            'total_edges': total_edges,
+            # 'edge_type_counts': edge_type_counts,  # Not applicable
             'activity_frequencies': activity_freqs,
             'adjacency_shape': self.adjacency_matrices.shape,
             'nodes_shape': self.node_matrices.shape
@@ -372,11 +292,11 @@ class GraphDataset:
         print(f"Number of traces: {stats['num_traces']}")
         print(f"Number of activities: {stats['num_activities']}")
         print(f"Max nodes per graph: {stats['max_nodes']}")
-        print(f"Number of edge types: {stats['num_edge_types']}")
+        print(f"Total edges (binary): {stats['total_edges']}")
 
-        print('\nEdge type distribution:')
-        for edge_type, count in stats['edge_type_counts'].items():
-            print(f"  {edge_type}: {count}")
+        # print('\nEdge type distribution:')  # Not applicable
+        # for edge_type, count in stats['edge_type_counts'].items():
+        #     print(f"  {edge_type}: {count}")
 
         print('\nTop 5 activities by frequency:')
         activity_freqs = stats['activity_frequencies']

@@ -42,7 +42,6 @@ def load_latest_model(output_dir='../../output_graph_gan'):
     # Recreate model
     gan = GraphProcessGAN(
         max_nodes=metadata['max_nodes'],
-        num_edge_types=metadata['num_edge_types'],
         num_activities=metadata['num_activities'],
         start_idx=metadata['vocab']['activity_to_idx']['START'],
         end_idx=metadata['vocab']['activity_to_idx']['END'],
@@ -78,7 +77,9 @@ def ensure_connectivity(adj_matrix, node_matrix, start_activity='START', end_act
     Remove invalid nodes.
     
     Args:
-        adj_matrix: (max_nodes, max_nodes, num_edge_types)
+        adj_matrix: adjacency matrix. Can be either
+            - (max_nodes, max_nodes) binary adjacency, or
+            - (max_nodes, max_nodes, num_edge_types) multi-channel adjacency
         node_matrix: (max_nodes, num_activities)
         start_activity, end_activity: Activity names
         idx_to_activity: Dict to get activity names
@@ -87,7 +88,14 @@ def ensure_connectivity(adj_matrix, node_matrix, start_activity='START', end_act
         Modified adj_matrix and node_matrix
     """
     max_nodes, num_activities = node_matrix.shape
-    _, _, num_edge_types = adj_matrix.shape
+    # Support both 2D binary adjacency and 3D multi-channel adjacency
+    if adj_matrix.ndim == 2:
+        adj_2d = (adj_matrix > 0).astype(int)
+    elif adj_matrix.ndim == 3:
+        adj_2d = (np.sum(adj_matrix, axis=-1) > 0).astype(int)
+    else:
+        # Fallback: reduce across last axis
+        adj_2d = (np.sum(adj_matrix, axis=-1) > 0).astype(int)
     
     # Find START and END nodes
     start_idx = None
@@ -105,9 +113,6 @@ def ensure_connectivity(adj_matrix, node_matrix, start_activity='START', end_act
     if start_idx is None or end_idx is None:
         # No START or END, return as is
         return adj_matrix, node_matrix
-    
-    # Compute adjacency (any edge type)
-    adj_2d = (np.sum(adj_matrix, axis=-1) > 0).astype(int)
     
     # Compute degrees
     in_degrees = np.sum(adj_2d, axis=0)  # Sum over sources
@@ -152,7 +157,13 @@ def ensure_connectivity(adj_matrix, node_matrix, start_activity='START', end_act
     
     # Rebuild matrices
     new_node_matrix = np.zeros_like(node_matrix)
-    new_adj_matrix = np.zeros_like(adj_matrix)
+    # Rebuild adjacency matrix preserving original adjacency rank
+    if adj_matrix.ndim == 2:
+        new_adj_matrix = np.zeros_like(adj_matrix)
+    elif adj_matrix.ndim == 3:
+        new_adj_matrix = np.zeros_like(adj_matrix)
+    else:
+        new_adj_matrix = np.zeros_like(adj_matrix)
     
     old_to_new = {}
     new_node_id = 0
@@ -163,10 +174,11 @@ def ensure_connectivity(adj_matrix, node_matrix, start_activity='START', end_act
     
     for old_src in kept_nodes:
         for old_tgt in kept_nodes:
-            if old_src in old_to_new and old_tgt in old_to_new:
-                new_src = old_to_new[old_src]
-                new_tgt = old_to_new[old_tgt]
-                new_adj_matrix[new_src, new_tgt] = adj_matrix[old_src, old_tgt]
+                if old_src in old_to_new and old_tgt in old_to_new:
+                    new_src = old_to_new[old_src]
+                    new_tgt = old_to_new[old_tgt]
+                    # Copy full edge information (binary or multi-channel)
+                    new_adj_matrix[new_src, new_tgt] = adj_matrix[old_src, old_tgt]
     
     return new_adj_matrix, new_node_matrix
 
@@ -183,7 +195,14 @@ def deduplicate_activities(adj_matrix, node_matrix):
         Modified adj_matrix and node_matrix with unique activities
     """
     max_nodes, num_activities = node_matrix.shape
-    _, _, num_edge_types = adj_matrix.shape
+    # Support both 2D binary adjacency and 3D multi-channel adjacency
+    if adj_matrix.ndim == 2:
+        # Nothing to unpack for edge channels
+        pass
+    elif adj_matrix.ndim == 3:
+        pass
+    else:
+        pass
     
     # Find activity with highest prob for each node
     node_activities = []
@@ -207,7 +226,7 @@ def deduplicate_activities(adj_matrix, node_matrix):
         kept_node = nodes_probs[0][0]  # Highest prob node
         kept_nodes.add(kept_node)
     
-    # Create new matrices
+    # Create new matrices, preserving original adjacency rank
     new_node_matrix = np.zeros_like(node_matrix)
     new_adj_matrix = np.zeros_like(adj_matrix)
     
@@ -223,10 +242,10 @@ def deduplicate_activities(adj_matrix, node_matrix):
     # Copy edges between kept nodes
     for old_src in kept_nodes:
         for old_tgt in kept_nodes:
-            if old_src in old_to_new and old_tgt in old_to_new:
-                new_src = old_to_new[old_src]
-                new_tgt = old_to_new[old_tgt]
-                new_adj_matrix[new_src, new_tgt] = adj_matrix[old_src, old_tgt]
+                if old_src in old_to_new and old_tgt in old_to_new:
+                    new_src = old_to_new[old_src]
+                    new_tgt = old_to_new[old_tgt]
+                    new_adj_matrix[new_src, new_tgt] = adj_matrix[old_src, old_tgt]
     
     return new_adj_matrix, new_node_matrix
 
@@ -258,10 +277,18 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename):
         
         f.write("\n")
         
-        # Write edges (from adjacency matrix, any edge type present)
+        # Write edges (support both binary adjacency and multi-channel)
         for source in range(max_nodes):
             for target in range(max_nodes):
-                if np.sum(adj_matrix[source, target, :]) > 0.5:  # At least one edge type present
+                # Support 2D binary adjacency or 3D multi-channel adjacency
+                if adj_matrix.ndim == 2:
+                    has_edge = adj_matrix[source, target] > 0.5
+                elif adj_matrix.ndim == 3:
+                    has_edge = np.sum(adj_matrix[source, target, :]) > 0.5
+                else:
+                    has_edge = np.any(adj_matrix[source, target] > 0)
+
+                if has_edge:
                     f.write(f"Edge {source} {target}\n")
 
 def generate_and_save_samples(gan, metadata, num_samples=10, output_dir='../../output_graph_gan/samples'):

@@ -1,8 +1,8 @@
 """
-Relational Graph Convolutional Network (R-GCN) Layers
+Graph Convolutional Network (GCN) Layers
 
-R-GCN processes graphs with multiple edge types (relations).
-Each edge type has its own weight matrix for message passing.
+Standard GCN for binary graphs (no edge types).
+Simplified version without relational processing.
 """
 
 import tensorflow as tf
@@ -12,21 +12,20 @@ from tensorflow.keras import layers
 
 class RGCNLayer(keras.layers.Layer):
     """
-    Single R-GCN layer for multi-relational graphs
+    Single GCN layer for binary graphs (no edge types)
 
-    For each edge type r:
-        h_i^(l+1) = σ(Σ_r Σ_{j∈N_i^r} (1/c_{i,r}) * W_r^(l) * h_j^(l) + W_0^(l) * h_i^(l))
+    Formula:
+        h_i^(l+1) = σ((1/c_i) * Σ_{j∈N_i} W * h_j^(l) + W_0 * h_i^(l))
 
     where:
         - h_i^(l): node i features at layer l
-        - N_i^r: neighbors of node i via relation r
-        - c_{i,r}: normalization constant
-        - W_r^(l): weight matrix for relation r
-        - W_0^(l): self-loop weight matrix
+        - N_i: neighbors of node i
+        - c_i: normalization constant (in-degree)
+        - W: weight matrix
+        - W_0: self-loop weight matrix
     """
 
     def __init__(self,
-                 num_edge_types,
                  output_dim,
                  activation='relu',
                  use_bias=True,
@@ -35,7 +34,6 @@ class RGCNLayer(keras.layers.Layer):
                  **kwargs):
         """
         Args:
-            num_edge_types: Number of edge/relation types
             output_dim: Output dimension
             activation: Activation function ('relu', 'tanh', etc.)
             use_bias: Whether to use bias
@@ -43,8 +41,6 @@ class RGCNLayer(keras.layers.Layer):
             use_layer_norm: Whether to apply layer normalization
         """
         super(RGCNLayer, self).__init__(**kwargs)
-
-        self.num_edge_types = num_edge_types
         self.output_dim = output_dim
         self.activation_fn = keras.activations.get(activation)
         self.use_bias = use_bias
@@ -52,11 +48,7 @@ class RGCNLayer(keras.layers.Layer):
         self.use_layer_norm = use_layer_norm
 
         # Create weight matrices for each edge type
-        self.edge_type_weights = []
-        for i in range(num_edge_types):
-            self.edge_type_weights.append(
-                layers.Dense(output_dim, use_bias=False, name=f'edge_type_{i}')
-            )
+        self.edge_weight = layers.Dense(output_dim, use_bias=False, name='edge_transform')
 
         # Self-loop weight
         self.self_weight = layers.Dense(
@@ -85,7 +77,7 @@ class RGCNLayer(keras.layers.Layer):
 
         Args:
             node_features: Node feature matrix (batch, num_nodes, feature_dim)
-            adjacency: Adjacency tensor (batch, num_nodes, num_nodes, num_edge_types)
+            adjacency: Binary adjacency matrix (batch, num_nodes, num_nodes)
             training: Training mode flag
 
         Returns:
@@ -95,33 +87,20 @@ class RGCNLayer(keras.layers.Layer):
         num_nodes = tf.shape(node_features)[1]
 
         # Message passing for each edge type
-        messages = []
-        for edge_type_idx in range(self.num_edge_types):
-            # Extract adjacency for this edge type
-            # (batch, nodes, nodes)
-            adj_slice = adjacency[:, :, :, edge_type_idx]
+        # Single message passing (no edge types)
+        # adjacency is now (batch, nodes, nodes) - binary
 
-            # Transform features
-            transformed = self.edge_type_weights[edge_type_idx](node_features)
+        # Transform features
+        transformed = self.edge_weight(node_features)  # (batch, nodes, output_dim)
 
-            # Aggregate messages via matrix multiplication
-            # adj_slice @ transformed = sum over neighbors
-            # (batch, nodes, output_dim)
-            message = tf.matmul(adj_slice, transformed)
+        # Aggregate messages via matrix multiplication
+        message = tf.matmul(adjacency, transformed)  # (batch, nodes, output_dim)
 
-            # Normalization: divide by in-degree for this edge type
-            # in_degree should be (batch, nodes) - sum over source nodes (axis=1)
-            in_degree = tf.reduce_sum(adj_slice, axis=1)  # (batch, nodes)
-            in_degree = tf.maximum(in_degree, 1.0)  # Avoid division by zero
-            # Expand to (batch, nodes, 1) for broadcasting
-            in_degree = tf.expand_dims(in_degree, axis=-1)  # (batch, nodes, 1)
-            # (batch, nodes, output_dim) / (batch, nodes, 1)
-            message = message / in_degree
-
-            messages.append(message)
-
-        # Aggregate all edge types
-        aggregated_messages = tf.add_n(messages)  # Sum over edge types
+        # Normalization: divide by in-degree
+        in_degree = tf.reduce_sum(adjacency, axis=1)  # (batch, nodes)
+        in_degree = tf.maximum(in_degree, 1.0)  # Avoid division by zero
+        in_degree = tf.expand_dims(in_degree, axis=-1)  # (batch, nodes, 1)
+        aggregated_messages = message / in_degree
 
         # Self-loop (update with node's own features)
         self_message = self.self_weight(node_features)
@@ -153,14 +132,12 @@ class RGCNStack(keras.Model):
     """
 
     def __init__(self,
-                 num_edge_types,
                  hidden_dims=(128, 64),
                  dropout_rate=0.3,
                  use_layer_norm=True,
                  name='rgcn_stack'):
         """
         Args:
-            num_edge_types: Number of edge types
             hidden_dims: Tuple of hidden dimensions for each layer
             dropout_rate: Dropout rate
             use_layer_norm: Use layer normalization
@@ -168,14 +145,12 @@ class RGCNStack(keras.Model):
         """
         super(RGCNStack, self).__init__(name=name)
 
-        self.num_edge_types = num_edge_types
         self.hidden_dims = hidden_dims
 
         # Create R-GCN layers
         self.rgcn_layers = []
         for i, dim in enumerate(hidden_dims):
             layer = RGCNLayer(
-                num_edge_types=num_edge_types,
                 output_dim=dim,
                 activation='relu',
                 dropout_rate=dropout_rate,
@@ -190,7 +165,7 @@ class RGCNStack(keras.Model):
 
         Args:
             node_features: Initial node features (batch, nodes, features)
-            adjacency: Adjacency tensor (batch, nodes, nodes, edge_types)
+            adjacency: Binary adjacency matrix (batch, nodes, nodes)
             training: Training mode
 
         Returns:

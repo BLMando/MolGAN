@@ -25,17 +25,15 @@ class GraphDiscriminator(keras.Model):
     """
     
     def __init__(self,
-                 num_edge_types,
                  num_activities,
                  rgcn_hidden_dims=(128, 64),
                  mlp_hidden_dims=(128, 64),
                  dropout_rate=0.3,
                  use_layer_norm=True,
-                 pooling_method='mean',
+                 pooling_method='max',
                  name='graph_discriminator'):
         """
         Args:
-            num_edge_types: Number of edge types
             num_activities: Number of activity types (input features)
             rgcn_hidden_dims: Hidden dimensions for R-GCN layers
             mlp_hidden_dims: Hidden dimensions for MLP classifier
@@ -46,7 +44,6 @@ class GraphDiscriminator(keras.Model):
         """
         super(GraphDiscriminator, self).__init__(name=name)
         
-        self.num_edge_types = num_edge_types
         self.num_activities = num_activities
         self.rgcn_hidden_dims = rgcn_hidden_dims
         self.mlp_hidden_dims = mlp_hidden_dims
@@ -54,7 +51,6 @@ class GraphDiscriminator(keras.Model):
         
         # R-GCN stack for processing graph structure
         self.rgcn = RGCNStack(
-            num_edge_types=num_edge_types,
             hidden_dims=rgcn_hidden_dims,
             dropout_rate=dropout_rate,
             use_layer_norm=use_layer_norm
@@ -85,7 +81,7 @@ class GraphDiscriminator(keras.Model):
         Forward pass
         
         Args:
-            adjacency: Adjacency matrices (batch, max_nodes, max_nodes, num_edge_types)
+            adjacency: Binary adjacency matrices (batch, max_nodes, max_nodes)
             nodes: Node feature matrices (batch, max_nodes, num_activities)
             training: Training mode flag
             
@@ -120,7 +116,6 @@ class GraphDiscriminatorWithFeatures(GraphDiscriminator):
     """
     
     def __init__(self,
-                 num_edge_types,
                  num_activities,
                  num_features=3,
                  rgcn_hidden_dims=(128, 64),
@@ -135,7 +130,6 @@ class GraphDiscriminatorWithFeatures(GraphDiscriminator):
             Other args same as GraphDiscriminator
         """
         super().__init__(
-            num_edge_types=num_edge_types,
             num_activities=num_activities,
             rgcn_hidden_dims=rgcn_hidden_dims,
             mlp_hidden_dims=mlp_hidden_dims,

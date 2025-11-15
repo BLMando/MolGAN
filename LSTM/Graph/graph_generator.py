@@ -3,7 +3,7 @@ Graph Generator - Generate process graphs from latent noise
 
 Architecture:
     z (noise) → Dense layers → Split into two heads:
-        1. Adjacency head → (max_nodes, max_nodes, num_edge_types)
+        1. Adjacency head → (max_nodes, max_nodes) binary
         2. Node head → (max_nodes, num_activities)
     
 Uses Gumbel-Softmax for differentiable discrete sampling
@@ -21,13 +21,12 @@ class GraphGenerator(keras.Model):
     Generator network: z → (Adjacency, Nodes)
 
     Transforms latent vector z into process graph represented as:
-    - Adjacency matrix with multiple edge types
+    - Binary adjacency matrix (no edge types)
     - Node feature matrix with activities
     """
 
     def __init__(self,
                  max_nodes,
-                 num_edge_types,
                  num_activities,
                  noise_dim=128,
                  hidden_dims=(256, 512, 1024),
@@ -36,7 +35,6 @@ class GraphGenerator(keras.Model):
         """
         Args:
             max_nodes: Maximum number of nodes in graph
-            num_edge_types: Number of edge types (SEQUENCE, AND_SPLIT, etc.)
             num_activities: Number of activity types
             noise_dim: Dimension of latent noise vector z
             hidden_dims: Tuple of hidden layer dimensions
@@ -46,14 +44,10 @@ class GraphGenerator(keras.Model):
         super(GraphGenerator, self).__init__(name=name)
 
         self.max_nodes = max_nodes
-        self.num_edge_types = num_edge_types
         self.num_activities = num_activities
         self.noise_dim = noise_dim
         self.hidden_dims = hidden_dims
         self.dropout_rate = dropout_rate
-
-        # +1 for NO_EDGE channel (allows sparsity)
-        self.num_edge_types_with_no_edge = num_edge_types + 1
 
         # Dense layers for processing noise
         self.dense_layers = []
@@ -66,8 +60,8 @@ class GraphGenerator(keras.Model):
                     layers.Dropout(dropout_rate, name=f'dropout_{i}')
                 )
 
-        # Adjacency matrix branch (output has +1 channel for NO_EDGE)
-        adj_output_dim = max_nodes * max_nodes * (num_edge_types + 1)
+        # Adjacency matrix branch (2 channels: EDGE, NO_EDGE)
+        adj_output_dim = max_nodes * max_nodes * 2
         self.adjacency_head = keras.Sequential([
             layers.Dense(adj_output_dim, activation=None, name='adj_logits')
         ], name='adjacency_head')
@@ -89,7 +83,7 @@ class GraphGenerator(keras.Model):
             training: Training mode flag
 
         Returns:
-            adjacency: Adjacency matrices (batch, max_nodes, max_nodes, num_edge_types)
+            adjacency: Binary adjacency matrices (batch, max_nodes, max_nodes)
             nodes: Node matrices (batch, max_nodes, num_activities)
         """
         batch_size = tf.shape(z)[0]
@@ -102,12 +96,11 @@ class GraphGenerator(keras.Model):
             else:
                 h = layer(h)
 
-        # Transform adj_logits into adjacency matrix logits of the defined shape: batch, max_nodes, max_nodes
+        # Reshape adjacency logits to (batch, max_nodes, max_nodes, 2)
         adj_logits = self.adjacency_head(h)
         adj_logits = tf.reshape(
             adj_logits,
-            (batch_size, self.max_nodes, self.max_nodes,
-             self.num_edge_types_with_no_edge)
+            (batch_size, self.max_nodes, self.max_nodes, 2)
         )
 
         # Transform node_logits into node matrix logits of the defined shape: batch, max_nodes, num_activities
@@ -118,13 +111,13 @@ class GraphGenerator(keras.Model):
         )
 
         # Apply Gumbel-Softmax for differentiable sampling
-        # For adjacency: sample over [edge_type_0, ..., edge_type_n, NO_EDGE]
-        adjacency_with_no_edge = gumbel_softmax(
+        # For adjacency: sample over [EDGE, NO_EDGE]
+        adjacency_2ch = gumbel_softmax(
             adj_logits, temperature=temperature, hard=hard, axis=-1)
 
-        # Remove NO_EDGE channel to get only real edges (shape: batch, nodes, nodes, num_edge_types)
-        adjacency = adjacency_with_no_edge[:, :, :, :-1]
-
+        # Extract only EDGE channel (index 0) to get binary adjacency
+        adjacency = adjacency_2ch[:, :, :, 0]  # (batch, nodes, nodes)
+        
         nodes = gumbel_softmax(
             node_logits, temperature=temperature, hard=hard, axis=-1)
 
@@ -168,7 +161,6 @@ class GraphGeneratorWithFeatures(GraphGenerator):
 
     def __init__(self,
                  max_nodes,
-                 num_edge_types,
                  num_activities,
                  num_features=3,
                  noise_dim=128,
@@ -182,7 +174,6 @@ class GraphGeneratorWithFeatures(GraphGenerator):
         """
         super().__init__(
             max_nodes=max_nodes,
-            num_edge_types=num_edge_types,
             num_activities=num_activities,
             noise_dim=noise_dim,
             hidden_dims=hidden_dims,

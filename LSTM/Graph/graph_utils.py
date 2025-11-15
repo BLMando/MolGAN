@@ -70,7 +70,7 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
 
     Args:
         discriminator: Discriminator model
-        real_adj: Real adjacency matrices (batch, nodes, nodes, edge_types)
+        real_adj: Real adjacency matrices (batch, nodes, nodes) - binary
         real_nodes: Real node matrices (batch, nodes, activities)
         fake_adj: Fake adjacency matrices
         fake_nodes: Fake node matrices
@@ -81,8 +81,8 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
     """
     batch_size = tf.shape(real_adj)[0]
 
-    # Random interpolation coefficients
-    alpha_adj = tf.random.uniform([batch_size, 1, 1, 1], 0.0, 1.0)
+    # Random interpolation coefficients (3D for binary adjacency)
+    alpha_adj = tf.random.uniform([batch_size, 1, 1], 0.0, 1.0)
     alpha_nodes = tf.random.uniform([batch_size, 1, 1], 0.0, 1.0)
 
     # Interpolated samples
@@ -172,23 +172,30 @@ def compute_graph_statistics(adj_matrices, node_matrices):
     Compute statistics from generated graphs
 
     Args:
-        adj_matrices: Adjacency matrices (batch, nodes, nodes, edge_types)
+        adj_matrices: Adjacency matrices. Can be either
+            - (batch, nodes, nodes) binary adjacency, or
+            - (batch, nodes, nodes, edge_types) multi-channel adjacency
         node_matrices: Node matrices (batch, nodes, activities)
 
     Returns:
         Dictionary with statistics
     """
     # Number of edges per graph
-    num_edges = tf.reduce_sum(adj_matrices, axis=[1, 2, 3])
+    if adj_matrices.ndim == 4:
+        num_edges = tf.reduce_sum(adj_matrices, axis=[1, 2, 3])
+        edge_type_counts = tf.reduce_sum(adj_matrices, axis=[0, 1, 2])
+    elif adj_matrices.ndim == 3:
+        num_edges = tf.reduce_sum(adj_matrices, axis=[1, 2])
+        edge_type_counts = None
+    else:
+        # Fallback: flatten
+        num_edges = tf.reduce_sum(adj_matrices, axis=list(range(1, tf.rank(adj_matrices))))
+        edge_type_counts = None
 
     # Number of nodes per graph (non-padding)
     # Assuming first activity index (0) is <PAD>
     node_mask = 1.0 - node_matrices[:, :, 0]  # (batch, nodes)
     num_nodes = tf.reduce_sum(node_mask, axis=1)
-
-    # Edge type distribution
-    edge_type_counts = tf.reduce_sum(
-        adj_matrices, axis=[0, 1, 2])  # (edge_types,)
 
     stats = {
         'avg_num_edges': tf.reduce_mean(num_edges),
@@ -210,18 +217,35 @@ def build_edge_index(adj_matrix):
         edge_index: Array of shape (num_edges, 2) with [source, target]
         edge_types: Array of shape (num_edges,) with edge type indices
     """
-    # Find non-zero entries
-    nodes, _, edge_types_dim = adj_matrix.shape
-
+    # Find non-zero entries. Support 2D binary adjacency or 3D multi-channel.
+    shape = adj_matrix.shape
     edge_list = []
     edge_type_list = []
 
-    for i in range(nodes):
-        for j in range(nodes):
-            for k in range(edge_types_dim):
-                if adj_matrix[i, j, k] > 0:
+    if adj_matrix.ndim == 2:
+        nodes = shape[0]
+        for i in range(nodes):
+            for j in range(nodes):
+                if adj_matrix[i, j] > 0:
                     edge_list.append([i, j])
-                    edge_type_list.append(k)
+                    edge_type_list.append(None)
+    elif adj_matrix.ndim == 3:
+        nodes = shape[0]
+        edge_types_dim = shape[2]
+        for i in range(nodes):
+            for j in range(nodes):
+                for k in range(edge_types_dim):
+                    if adj_matrix[i, j, k] > 0:
+                        edge_list.append([i, j])
+                        edge_type_list.append(k)
+    else:
+        # Fallback: try to flatten last axis
+        nodes = shape[0]
+        for i in range(nodes):
+            for j in range(nodes):
+                if np.any(adj_matrix[i, j] > 0):
+                    edge_list.append([i, j])
+                    edge_type_list.append(None)
 
     if len(edge_list) == 0:
         return np.array([]).reshape(0, 2), np.array([])
@@ -258,8 +282,11 @@ def visualize_graph(adj_matrix, node_matrix, idx_to_activity, edge_type_names):
     for (src, tgt), edge_type in zip(edge_index, edge_types):
         src_activity = idx_to_activity.get(np.argmax(node_matrix[src]), 'UNK')
         tgt_activity = idx_to_activity.get(np.argmax(node_matrix[tgt]), 'UNK')
-        edge_name = edge_type_names[edge_type] if edge_type < len(
-            edge_type_names) else f'TYPE_{edge_type}'
+        if edge_type is None:
+            edge_name = 'EDGE'
+        else:
+            edge_name = edge_type_names[edge_type] if edge_type < len(
+                edge_type_names) else f'TYPE_{edge_type}'
         print(
             f'  {src} ({src_activity}) --[{edge_name}]--> {tgt} ({tgt_activity})')
 

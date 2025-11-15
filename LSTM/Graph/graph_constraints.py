@@ -112,14 +112,13 @@ class GraphProcessConstraints:
 
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
-            adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
 
         Returns:
             Combined loss for all END-related constraints
         """
-        # Compute out-degrees
-        total_adj = tf.reduce_sum(adjacency, axis=-1)
-        out_degrees = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes)
+        # Compute out-degrees (adjacency already binary)
+        out_degrees = tf.reduce_sum(adjacency, axis=2)  # (batch, max_nodes)
         
         # Get END node probabilities for all positions
         end_probs = nodes[:, :, self.end_idx]  # (batch, max_nodes)
@@ -216,18 +215,15 @@ class GraphProcessConstraints:
         Uses SOFT penalties that allow gradual learning
         
         Args:
-            adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
             nodes: Node matrix (batch, max_nodes, num_activities)
             
         Returns:
             Loss penalizing degree violations
         """
-        # Sum over edge types
-        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
-        
-        # Compute degrees
-        in_degrees = tf.reduce_sum(total_adj, axis=1)  # (batch, max_nodes) - sum over sources
-        out_degrees = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes) - sum over targets
+        # Compute degrees (adjacency already binary)
+        in_degrees = tf.reduce_sum(adjacency, axis=1)  # (batch, max_nodes) - sum over sources
+        out_degrees = tf.reduce_sum(adjacency, axis=2)  # (batch, max_nodes) - sum over targets
         
         # Identify START and END nodes
         start_probs = nodes[:, :, self.start_idx]  # (batch, max_nodes)
@@ -264,21 +260,19 @@ class GraphProcessConstraints:
         Encourages that most active nodes have at least one incoming or outgoing edge
 
         Args:
-            adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
             nodes: Node matrix (batch, max_nodes, num_activities)
 
         Returns:
             Loss penalizing isolated nodes
         """
-        # Sum over edge types
-        # (batch, max_nodes, max_nodes)
-        total_adj = tf.reduce_sum(adjacency, axis=-1)
+        # Adjacency is already binary (batch, max_nodes, max_nodes)
 
         # Outgoing edges per node
-        outgoing = tf.reduce_sum(total_adj, axis=-1)  # (batch, max_nodes)
+        outgoing = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes)
 
         # Incoming edges per node
-        incoming = tf.reduce_sum(total_adj, axis=-2)  # (batch, max_nodes)
+        incoming = tf.reduce_sum(adjacency, axis=-2)  # (batch, max_nodes)
 
         # Node is connected if it has incoming OR outgoing edges
         is_connected = tf.minimum(
@@ -304,25 +298,24 @@ class GraphProcessConstraints:
         3. General cycles via transitive closure - soft penalty
         
         Args:
-            adjacency: Adjacency matrix (batch, max_nodes, max_nodes, edge_types)
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
 
         Returns:
             Loss penalizing loops/cycles in the graph
         """
-        # Sum over edge types to get total adjacency
-        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
+        # Adjacency is already binary (batch, max_nodes, max_nodes)
         
         # === COMPONENT 1: Self-loops (diagonal elements) ===
         # Highest priority - these are never valid in process graphs
-        diagonal = tf.linalg.diag_part(total_adj)  # (batch, max_nodes)
+        diagonal = tf.linalg.diag_part(adjacency)  # (batch, max_nodes)
         loss_self_loops = tf.reduce_mean(diagonal)
         
         # === COMPONENT 2: 2-cycles (A→B and B→A) ===
         # Check if edge exists in both directions
-        total_adj_T = tf.transpose(total_adj, perm=[0, 2, 1])  # Transpose
-        bidirectional = total_adj * total_adj_T  # Element-wise product
+        adjacency_T = tf.transpose(adjacency, perm=[0, 2, 1])  # Transpose
+        bidirectional = adjacency * adjacency_T  # Element-wise product
         # Only count upper triangle to avoid double counting
-        indices = tf.range(tf.shape(total_adj)[1])
+        indices = tf.range(tf.shape(adjacency)[1])
         i_indices = tf.expand_dims(indices, axis=1)  # (max_nodes, 1)
         j_indices = tf.expand_dims(indices, axis=0)  # (1, max_nodes)
         upper_mask = tf.cast(i_indices < j_indices, tf.float32)  # (max_nodes, max_nodes)
@@ -334,9 +327,9 @@ class GraphProcessConstraints:
         # === COMPONENT 3: Longer cycles via transitive closure (simplified) ===
         # Soft detection - only compute up to 4 hops to reduce computation
         # This catches most realistic cycles without being too aggressive
-        reachable = total_adj
+        reachable = adjacency
         for _ in range(4):  # Reduced from 8 to 4
-            reachable = tf.minimum(tf.matmul(reachable, total_adj) + reachable, 1.0)
+            reachable = tf.minimum(tf.matmul(reachable, adjacency) + reachable, 1.0)
         
         # Check diagonal of reachability matrix
         # If reachable[i,i] > 0, there's a path from i to i (cycle)
@@ -378,10 +371,9 @@ class GraphProcessConstraints:
         Returns:
             Combined connectivity loss
         """
-        # Compute adjacency and degrees
-        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
-        in_degrees = tf.reduce_sum(total_adj, axis=1)   # (batch, max_nodes)
-        out_degrees = tf.reduce_sum(total_adj, axis=2)  # (batch, max_nodes)
+        # Compute degrees (adjacency already binary)
+        in_degrees = tf.reduce_sum(adjacency, axis=1)   # (batch, max_nodes)
+        out_degrees = tf.reduce_sum(adjacency, axis=2)  # (batch, max_nodes)
         
         # Node identifiers
         start_probs = nodes[:, :, self.start_idx]
@@ -396,7 +388,7 @@ class GraphProcessConstraints:
         # === COMPONENT 2: START Connectivity (must have out-edges) ===
         # Mask for valid targets (non-PAD)
         non_pad_mask = tf.expand_dims(active_mask, axis=1)  # (batch, 1, max_nodes)
-        valid_outgoing = total_adj * non_pad_mask
+        valid_outgoing = adjacency * non_pad_mask
         total_valid_out = tf.reduce_sum(valid_outgoing, axis=2)  # (batch, max_nodes)
         
         # Penalize START with no outgoing edges
@@ -446,19 +438,17 @@ class GraphProcessConstraints:
         Returns:
             Loss penalizing disconnected START-END
         """
-        # Binary adjacency (any edge type)
-        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
-        binary_adj = tf.minimum(total_adj, 1.0)  # Clip to binary
+        # Adjacency is already binary (batch, max_nodes, max_nodes)
         
         # Compute reachability matrix using transitive closure approximation
         # A + A^2 + A^3 + ... captures multi-hop connections
-        reachable = binary_adj
-        current = binary_adj
+        reachable = adjacency
+        current = adjacency
         
         # Compute up to 8 hops (sufficient for most process graphs)
         # Using fixed number to avoid symbolic tensor issues
         for _ in range(8):
-            current = tf.matmul(current, binary_adj)
+            current = tf.matmul(current, adjacency)
             current = tf.minimum(current, 1.0)  # Keep binary
             reachable = tf.minimum(reachable + current, 1.0)
         
@@ -496,25 +486,23 @@ class GraphProcessConstraints:
         Returns:
             Loss penalizing nodes not on any START-END path
         """
-        # Binary adjacency (any edge type)
-        total_adj = tf.reduce_sum(adjacency, axis=-1)  # (batch, max_nodes, max_nodes)
-        binary_adj = tf.minimum(total_adj, 1.0)
+        # Adjacency is already binary (batch, max_nodes, max_nodes)
         
         # 1. Compute forward reachability from START (nodes reachable from START)
-        forward_reach = binary_adj
-        current_forward = binary_adj
+        forward_reach = adjacency
+        current_forward = adjacency
         for _ in range(10):
-            current_forward = tf.matmul(current_forward, binary_adj)
+            current_forward = tf.matmul(current_forward, adjacency)
             current_forward = tf.minimum(current_forward, 1.0)
             forward_reach = tf.minimum(forward_reach + current_forward, 1.0)
         
         # 2. Compute backward reachability to END (nodes that can reach END)
         # Transpose adjacency for backward propagation
-        binary_adj_T = tf.transpose(binary_adj, perm=[0, 2, 1])
-        backward_reach = binary_adj_T
-        current_backward = binary_adj_T
+        adjacency_T = tf.transpose(adjacency, perm=[0, 2, 1])
+        backward_reach = adjacency_T
+        current_backward = adjacency_T
         for _ in range(8):
-            current_backward = tf.matmul(current_backward, binary_adj_T)
+            current_backward = tf.matmul(current_backward, adjacency_T)
             current_backward = tf.minimum(current_backward, 1.0)
             backward_reach = tf.minimum(backward_reach + current_backward, 1.0)
         # Transpose back to (batch, from, to)

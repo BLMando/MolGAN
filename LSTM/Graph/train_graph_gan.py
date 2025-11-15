@@ -250,6 +250,9 @@ def train_graph_gan(
     batch_size=32,
     epochs=500,
     validation_split=0.1,
+    # Data filtering
+    min_graph_size=None,
+    max_graph_size=None,
     # Optimizer
     d_lr=0.0001,
     g_lr=0.0001,
@@ -285,6 +288,8 @@ def train_graph_gan(
         batch_size: Training batch size
         epochs: Maximum epochs
         validation_split: Fraction of data for validation
+        min_graph_size: Minimum number of nodes to include (None = no filter)
+        max_graph_size: Maximum number of nodes to include (None = no filter)
         d_lr: Discriminator learning rate
         g_lr: Generator learning rate
         beta_1: Adam beta_1
@@ -330,13 +335,22 @@ def train_graph_gan(
     # 2. CREATE DATASET
     # ================================================================
     print('\n🔧 Creating dataset...')
+    
+    if min_graph_size is not None or max_graph_size is not None:
+        print(f'  Filtering graphs by size:')
+        if min_graph_size is not None:
+            print(f'    Min nodes: {min_graph_size}')
+        if max_graph_size is not None:
+            print(f'    Max nodes: {max_graph_size}')
 
     dataset = GraphDataset(
         traces=graphs,
         activity_to_idx=vocab['activity_to_idx'],
         max_nodes=max_nodes,
         include_features=False,  # Don't include temporal features for now
-        verbose=True
+        verbose=True,
+        min_graph_size=min_graph_size,
+        max_graph_size=max_graph_size
     )
 
     # Get matrices
@@ -568,7 +582,7 @@ if __name__ == '__main__':
                         help='Output directory')
 
     # Model architecture
-    parser.add_argument('--max-nodes', type=int, default=10,
+    parser.add_argument('--max-nodes', type=int, default=6,
                         help='Maximum nodes per graph')
     parser.add_argument('--noise-dim', type=int, default=128,
                         help='Latent noise dimension')
@@ -613,5 +627,7 @@ if __name__ == '__main__':
         d_lr=args.d_lr,
         g_lr=args.g_lr,
         validation_split=args.validation_split,
-        seed=args.seed
+        seed=args.seed,
+        min_graph_size=6,
+        max_graph_size=6
     )

@@ -30,7 +30,9 @@ class GraphDataset:
                  activity_to_idx: Dict[str, int],
                  max_nodes: int,
                  include_features: bool = True,
-                 verbose: bool = True):
+                 verbose: bool = True,
+                 min_graph_size: int = None,
+                 max_graph_size: int = None):
         """
         Args:
             traces: List of parsed traces from ig_loader
@@ -38,14 +40,18 @@ class GraphDataset:
             max_nodes: Maximum number of nodes per graph
             include_features: Whether to include temporal features
             verbose: Print progress
+            min_graph_size: Minimum number of nodes (vertices) to include. None = no minimum
+            max_graph_size: Maximum number of nodes (vertices) to include. None = no maximum
         """
-        self.traces = traces
         self.activity_to_idx = activity_to_idx
         self.idx_to_activity = {v: k for k, v in activity_to_idx.items()}
         self.max_nodes = max_nodes
         self.include_features = include_features
         self.verbose = verbose
         self.num_activities = len(activity_to_idx)
+        
+        # Filter traces by size if specified
+        self.traces = self._filter_traces_by_size(traces, min_graph_size, max_graph_size)
 
         # No edge type classification (binary adjacency)
         # self.edge_classifier = EdgeTypeClassifier()  # REMOVED
@@ -57,6 +63,45 @@ class GraphDataset:
         self.feature_matrices = [] if include_features else None
 
         self._preprocess_traces()
+
+    def _filter_traces_by_size(self, traces: List[Dict], min_size: int = None, max_size: int = None) -> List[Dict]:
+        """
+        Filter traces to only include graphs within specified size range
+        
+        Args:
+            traces: List of traces
+            min_size: Minimum number of vertices (nodes) to include
+            max_size: Maximum number of vertices (nodes) to include
+            
+        Returns:
+            Filtered list of traces
+        """
+        if min_size is None and max_size is None:
+            return traces
+        
+        filtered_traces = []
+        for trace in traces:
+            num_vertices = len(trace['vertices'])
+            
+            # Check minimum size
+            if min_size is not None and num_vertices < min_size:
+                continue
+            
+            # Check maximum size
+            if max_size is not None and num_vertices > max_size:
+                continue
+            
+            filtered_traces.append(trace)
+        
+        if self.verbose:
+            log(f'Filtered traces by size: {len(traces)} -> {len(filtered_traces)} traces')
+            if min_size is not None:
+                log(f'  Min size: {min_size} nodes')
+            if max_size is not None:
+                log(f'  Max size: {max_size} nodes')
+        
+        return filtered_traces
+
 
     def _preprocess_traces(self):
         """Convert all traces to matrices"""
@@ -267,6 +312,9 @@ class GraphDataset:
 
         # Total edge count (binary)
         total_edges = int(np.sum(self.adjacency_matrices))
+        
+        # Graph size distribution
+        graph_sizes = self.get_graph_size_distribution()
 
         stats = {
             'num_traces': len(self.traces),
@@ -277,10 +325,34 @@ class GraphDataset:
             # 'edge_type_counts': edge_type_counts,  # Not applicable
             'activity_frequencies': activity_freqs,
             'adjacency_shape': self.adjacency_matrices.shape,
-            'nodes_shape': self.node_matrices.shape
+            'nodes_shape': self.node_matrices.shape,
+            'graph_sizes': graph_sizes
         }
 
         return stats
+    
+    def get_graph_size_distribution(self) -> Dict[str, any]:
+        """
+        Analyze the distribution of graph sizes in the dataset
+        
+        Returns:
+            Dictionary with size statistics
+        """
+        sizes = []
+        for trace in self.traces:
+            sizes.append(len(trace['vertices']))
+        
+        sizes = np.array(sizes)
+        
+        return {
+            'min': int(np.min(sizes)),
+            'max': int(np.max(sizes)),
+            'mean': float(np.mean(sizes)),
+            'median': float(np.median(sizes)),
+            'std': float(np.std(sizes)),
+            'sizes': sizes,
+            'histogram': np.histogram(sizes, bins=min(20, np.max(sizes) - np.min(sizes) + 1))
+        }
 
     def print_statistics(self):
         """Print dataset statistics"""
@@ -297,6 +369,14 @@ class GraphDataset:
         # print('\nEdge type distribution:')  # Not applicable
         # for edge_type, count in stats['edge_type_counts'].items():
         #     print(f"  {edge_type}: {count}")
+        
+        print('\nGraph size distribution:')
+        size_stats = stats['graph_sizes']
+        print(f"  Min nodes: {size_stats['min']}")
+        print(f"  Max nodes: {size_stats['max']}")
+        print(f"  Mean nodes: {size_stats['mean']:.2f}")
+        print(f"  Median nodes: {size_stats['median']:.1f}")
+        print(f"  Std dev: {size_stats['std']:.2f}")
 
         print('\nTop 5 activities by frequency:')
         activity_freqs = stats['activity_frequencies']

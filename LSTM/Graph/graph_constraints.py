@@ -503,7 +503,7 @@ class GraphProcessConstraints:
         # 1. Compute forward reachability from START (nodes reachable from START)
         forward_reach = binary_adj
         current_forward = binary_adj
-        for _ in range(8):
+        for _ in range(10):
             current_forward = tf.matmul(current_forward, binary_adj)
             current_forward = tf.minimum(current_forward, 1.0)
             forward_reach = tf.minimum(forward_reach + current_forward, 1.0)

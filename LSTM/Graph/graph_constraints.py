@@ -64,7 +64,6 @@ class GraphProcessConstraints:
         self.lambda_path = lambda_path
         self.lambda_node_on_path = lambda_node_on_path
         self.lambda_sparsity = lambda_sparsity
-        self.lambda_no_start_end_direct = lambda_no_start_end_direct
 
     def start_node_loss(self, nodes):
         """

@@ -582,7 +582,7 @@ if __name__ == '__main__':
                         help='Output directory')
 
     # Model architecture
-    parser.add_argument('--max-nodes', type=int, default=6,
+    parser.add_argument('--max-nodes', type=int, default=5,
                         help='Maximum nodes per graph')
     parser.add_argument('--noise-dim', type=int, default=128,
                         help='Latent noise dimension')
@@ -628,6 +628,6 @@ if __name__ == '__main__':
         g_lr=args.g_lr,
         validation_split=args.validation_split,
         seed=args.seed,
-        min_graph_size=6,
-        max_graph_size=6
+        min_graph_size=5,
+        max_graph_size=args.max_nodes
     )

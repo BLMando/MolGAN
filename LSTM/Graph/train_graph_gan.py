@@ -244,7 +244,7 @@ def train_graph_gan(
     n_critic=3,
     lambda_gp=10.0,
     lambda_constraint=0.5,
-    lambda_structure=10.0,
+    lambda_structure=15.0,
     lambda_degree=10.0,
     lambda_sparsity=0.0,
     batch_size=32,

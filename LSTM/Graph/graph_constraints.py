@@ -46,6 +46,7 @@ class GraphProcessConstraints:
             pad_idx: Index of PAD token
             lambda_*: Weights for different constraint losses
             lambda_sparsity: Weight for sparsity loss (encourages varying node counts)
+            lambda_no_start_end_direct: Weight for preventing direct START→END connections
         """
         self.start_idx = start_idx
         self.end_idx = end_idx
@@ -63,6 +64,7 @@ class GraphProcessConstraints:
         self.lambda_path = lambda_path
         self.lambda_node_on_path = lambda_node_on_path
         self.lambda_sparsity = lambda_sparsity
+        self.lambda_no_start_end_direct = lambda_no_start_end_direct
 
     def start_node_loss(self, nodes):
         """
@@ -339,11 +341,11 @@ class GraphProcessConstraints:
         loss_cycles = tf.reduce_mean(tf.square(reachable_diag))  # Squared for stronger penalty
         
         # === COMBINED LOSS ===
-        # INCREASED weights for stronger loop prevention
+        # VERY HIGH weights for aggressive loop prevention
         total_loss = (
-            10.0 * loss_self_loops +    # Self-loops (much higher than before)
-            5.0 * loss_2cycles +        # Bidirectional edges (much higher)
-            3.0 * loss_cycles           # General cycles (higher)
+            20.0 * loss_self_loops +    # Self-loops - MASSIVELY increased
+            25.0 * loss_2cycles +       # Bidirectional edges - MASSIVELY increased
+            15.0 * loss_cycles          # General cycles - MASSIVELY increased
         )
         
         return total_loss

@@ -9,8 +9,8 @@ import tensorflow as tf
 from tensorflow import keras
 import numpy as np
 
-from graph_generator import GraphGenerator
-from graph_discriminator import GraphDiscriminator
+from graph_generator import GraphGenerator, GraphGeneratorWithFeatures
+from graph_discriminator import GraphDiscriminator, GraphDiscriminatorWithFeatures
 from graph_constraints import GraphProcessConstraints
 from graph_utils import wasserstein_loss, gradient_penalty_graph
 
@@ -53,6 +53,7 @@ class GraphProcessGAN(keras.Model):
                  lambda_path=3.0,
                  lambda_node_on_path=5.0,
                  lambda_sparsity=0.0,
+                 lambda_time_monotonic=10.0,
                  # Temperature scheduling
                  temp_start=5.0,
                  temp_min=0.5,
@@ -83,6 +84,7 @@ class GraphProcessGAN(keras.Model):
             lambda_path: Path existence weight (START→END reachability)
             lambda_node_on_path: Nodes on path weight (all nodes must be on START→END paths)
             lambda_sparsity: Sparsity weight (encourage varying node counts)
+            lambda_time_monotonic: Monotonic time weight (trace_time must increase)
             temp_start: Initial Gumbel-Softmax temperature
             temp_min: Minimum temperature
             temp_decay: Temperature decay rate
@@ -103,21 +105,39 @@ class GraphProcessGAN(keras.Model):
         self.temp_decay = temp_decay
 
         # Build generator (no num_edge_types)
-        self.generator = GraphGenerator(
+        # self.generator = GraphGenerator(
+        #     max_nodes=max_nodes,
+        #     num_activities=num_activities,
+        #     noise_dim=noise_dim,
+        #     hidden_dims=generator_hidden_dims,
+        #     dropout_rate=generator_dropout
+        # )
+        
+        self.generator = GraphGeneratorWithFeatures(
             max_nodes=max_nodes,
             num_activities=num_activities,
+            num_features=3,
             noise_dim=noise_dim,
             hidden_dims=generator_hidden_dims,
             dropout_rate=generator_dropout
         )
 
         # Build discriminator (no num_edge_types)
-        self.discriminator = GraphDiscriminator(
+        # self.discriminator = GraphDiscriminator(
+        #     num_activities=num_activities,
+        #     rgcn_hidden_dims=rgcn_hidden_dims,
+        #     mlp_hidden_dims=mlp_hidden_dims,
+        #     dropout_rate=discriminator_dropout
+        # )
+        
+        self.discriminator = GraphDiscriminatorWithFeatures(
             num_activities=num_activities,
+            num_features=3,
             rgcn_hidden_dims=rgcn_hidden_dims,
             mlp_hidden_dims=mlp_hidden_dims,
             dropout_rate=discriminator_dropout
         )
+        
 
         # Constraints (simplified after merging)
         self.constraints = GraphProcessConstraints(
@@ -132,7 +152,8 @@ class GraphProcessGAN(keras.Model):
             lambda_degree=lambda_degree,
             lambda_path=lambda_path,
             lambda_node_on_path=lambda_node_on_path,
-            lambda_sparsity=lambda_sparsity
+            lambda_sparsity=lambda_sparsity,
+            lambda_time_monotonic=lambda_time_monotonic
         )
 
         # Metrics (tracked automatically by Keras)
@@ -186,12 +207,14 @@ class GraphProcessGAN(keras.Model):
             Dictionary of metric values
         """
         # Unpack data
-        if isinstance(real_data, tuple) and len(real_data) == 2:
+        if isinstance(real_data, tuple) and len(real_data) == 3:
+            real_adj, real_nodes, real_features = real_data
+        elif isinstance(real_data, tuple) and len(real_data) == 2:
             real_adj, real_nodes = real_data
-        elif isinstance(real_data, tuple) and len(real_data) == 3:
-            real_adj, real_nodes, _ = real_data  # Ignore features for now
+            real_features = None
         else:
             real_adj, real_nodes = real_data, real_data
+            real_features = None
 
         batch_size = tf.shape(real_adj)[0]
 
@@ -202,21 +225,21 @@ class GraphProcessGAN(keras.Model):
             with tf.GradientTape() as tape:
                 # Real data scores
                 real_scores = self.discriminator(
-                    real_adj, real_nodes, training=True)
+                    real_adj, real_nodes, real_features, training=True)
 
                 # Generate fake data
                 z = self.generator.sample_noise(batch_size)
-                fake_adj, fake_nodes = self.generator(z, temperature=self.temperature,
+                fake_adj, fake_nodes, fake_features = self.generator(z, temperature=self.temperature,
                                                       hard=False, training=True)
                 fake_scores = self.discriminator(
-                    fake_adj, fake_nodes, training=True)
+                    fake_adj, fake_nodes, fake_features, training=True)
 
                 # Wasserstein loss
                 d_loss = wasserstein_loss(real_scores, fake_scores)
 
                 # Gradient penalty
                 gp = gradient_penalty_graph(self.discriminator, real_adj, real_nodes,
-                                            fake_adj, fake_nodes)
+                                            fake_adj, fake_nodes, real_features, fake_features)
 
                 # Total discriminator loss
                 total_d_loss = d_loss + self.lambda_gp * gp
@@ -234,19 +257,19 @@ class GraphProcessGAN(keras.Model):
         with tf.GradientTape() as tape:
             # Generate fake data
             z = self.generator.sample_noise(batch_size)
-            fake_adj, fake_nodes = self.generator(z, temperature=self.temperature,
+            fake_adj, fake_nodes, fake_features = self.generator(z, temperature=self.temperature,
                                                   hard=False, training=True)
 
             # Discriminator scores for fake data
             fake_scores = self.discriminator(
-                fake_adj, fake_nodes, training=True)
-
+                fake_adj, fake_nodes, fake_features, training=True)
             # Generator loss (fool discriminator)
             g_loss = -tf.reduce_mean(fake_scores)
 
             # Process constraints
             constraint_loss = self.constraints.total_constraint_loss(
-                fake_adj, fake_nodes)
+                fake_adj, fake_nodes, fake_features)
+            
 
             # Total generator loss
             total_g_loss = g_loss + self.lambda_constraint * constraint_loss
@@ -290,29 +313,32 @@ class GraphProcessGAN(keras.Model):
             Dictionary of metric values
         """
         # Unpack data
-        if isinstance(real_data, tuple) and len(real_data) == 2:
+        if isinstance(real_data, tuple) and len(real_data) == 3:
+            real_adj, real_nodes, real_features = real_data
+        elif isinstance(real_data, tuple) and len(real_data) == 2:
             real_adj, real_nodes = real_data
-        elif isinstance(real_data, tuple) and len(real_data) == 3:
-            real_adj, real_nodes, _ = real_data
+            real_features = None
         else:
             real_adj, real_nodes = real_data, real_data
+            real_features = None
 
         batch_size = tf.shape(real_adj)[0]
 
         # Generate fake data (no gradient tracking)
         z = self.generator.sample_noise(batch_size)
-        fake_adj, fake_nodes = self.generator(z, temperature=self.temperature,
+        fake_adj, fake_nodes, fake_features = self.generator(z, temperature=self.temperature,
                                               hard=False, training=False)
 
         # Compute scores
-        real_scores = self.discriminator(real_adj, real_nodes, training=False)
-        fake_scores = self.discriminator(fake_adj, fake_nodes, training=False)
+        real_scores = self.discriminator(real_adj, real_nodes, real_features, training=False)
+        fake_scores = self.discriminator(fake_adj, fake_nodes, fake_features, training=False)
 
         # Compute losses (for validation metrics)
         d_loss = wasserstein_loss(real_scores, fake_scores)
         g_loss = -tf.reduce_mean(fake_scores)
+        # Process constraints
         constraint_loss = self.constraints.total_constraint_loss(
-            fake_adj, fake_nodes)
+            fake_adj, fake_nodes, fake_features)
 
         # Update metrics
         self.d_loss_tracker.update_state(d_loss)
@@ -335,15 +361,17 @@ class GraphProcessGAN(keras.Model):
         Returns:
             adjacency: Generated adjacency matrices (num_samples, max_nodes, max_nodes) - binary adjacency
             nodes: Generated node matrices (num_samples, max_nodes, num_activities)
+            features: Generated temporal features (num_samples, max_nodes, num_features)
         """
         batch_size = 128
         all_adj = []
         all_nodes = []
+        all_features = []
 
         for i in range(0, num_samples, batch_size):
             current_batch_size = min(batch_size, num_samples - i)
 
-            adj, nodes = self.generator.generate(
+            adj, nodes, features = self.generator.generate(
                 num_samples=current_batch_size,
                 temperature=temperature,
                 hard=hard
@@ -351,5 +379,6 @@ class GraphProcessGAN(keras.Model):
 
             all_adj.append(adj.numpy())
             all_nodes.append(nodes.numpy())
+            all_features.append(features.numpy())
 
-        return np.concatenate(all_adj, axis=0), np.concatenate(all_nodes, axis=0)
+        return np.concatenate(all_adj, axis=0), np.concatenate(all_nodes, axis=0), np.concatenate(all_features, axis=0)

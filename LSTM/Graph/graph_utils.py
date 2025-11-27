@@ -64,7 +64,7 @@ def wasserstein_loss(real_scores, fake_scores):
     return tf.reduce_mean(fake_scores) - tf.reduce_mean(real_scores)
 
 
-def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_nodes, lambda_gp=10.0):
+def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_nodes, real_features=None, fake_features=None, lambda_gp=10.0):
     """
     Gradient penalty for WGAN-GP on graph data
 
@@ -74,6 +74,8 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
         real_nodes: Real node matrices (batch, nodes, activities)
         fake_adj: Fake adjacency matrices
         fake_nodes: Fake node matrices
+        real_features: Real feature matrices (optional)
+        fake_features: Fake feature matrices (optional)
         lambda_gp: Gradient penalty coefficient
 
     Returns:
@@ -90,18 +92,37 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
     interpolated_nodes = alpha_nodes * \
         real_nodes + (1 - alpha_nodes) * fake_nodes
 
+    interpolated_features = None
+    if real_features is not None and fake_features is not None:
+        alpha_features = tf.random.uniform([batch_size, 1, 1], 0.0, 1.0)
+        interpolated_features = alpha_features * \
+            real_features + (1 - alpha_features) * fake_features
+
     # Compute gradients
     with tf.GradientTape() as tape:
         tape.watch([interpolated_adj, interpolated_nodes])
-        scores = discriminator(
-            interpolated_adj, interpolated_nodes, training=True)
+        if interpolated_features is not None:
+            tape.watch(interpolated_features)
+            scores = discriminator(
+                interpolated_adj, interpolated_nodes, interpolated_features, training=True)
+        else:
+            scores = discriminator(
+                interpolated_adj, interpolated_nodes, training=True)
 
-    gradients = tape.gradient(scores, [interpolated_adj, interpolated_nodes])
+    if interpolated_features is not None:
+        gradients = tape.gradient(scores, [interpolated_adj, interpolated_nodes, interpolated_features])
+    else:
+        gradients = tape.gradient(scores, [interpolated_adj, interpolated_nodes])
 
     # Compute gradient norm
     gradients_adj = tf.reshape(gradients[0], [batch_size, -1])
     gradients_nodes = tf.reshape(gradients[1], [batch_size, -1])
-    gradients_combined = tf.concat([gradients_adj, gradients_nodes], axis=1)
+    
+    if interpolated_features is not None:
+        gradients_features = tf.reshape(gradients[2], [batch_size, -1])
+        gradients_combined = tf.concat([gradients_adj, gradients_nodes, gradients_features], axis=1)
+    else:
+        gradients_combined = tf.concat([gradients_adj, gradients_nodes], axis=1)
 
     gradient_norm = tf.sqrt(tf.reduce_sum(
         tf.square(gradients_combined), axis=1) + 1e-12)

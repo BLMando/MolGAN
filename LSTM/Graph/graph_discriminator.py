@@ -143,9 +143,16 @@ class GraphDiscriminatorWithFeatures(GraphDiscriminator):
         
         # Feature processing layer
         self.feature_processor = layers.Dense(
-            rgcn_hidden_dims[0] // 2,
+            rgcn_hidden_dims[-1] // 2,
             activation='relu',
             name='feature_processor'
+        )
+        
+        # Projection layer to bring concatenated features back to expected dimension
+        self.feature_projection = layers.Dense(
+            rgcn_hidden_dims[-1],
+            activation='relu',
+            name='feature_projection'
         )
     
     def call(self, adjacency, nodes, features=None, training=False):
@@ -164,10 +171,11 @@ class GraphDiscriminatorWithFeatures(GraphDiscriminator):
         # Process through R-GCN
         node_features = self.rgcn(nodes, adjacency, training=training)
         
-        # If features provided, concatenate them
+        # If features provided, concatenate and project them
         if features is not None:
             processed_features = self.feature_processor(features)
             node_features = tf.concat([node_features, processed_features], axis=-1)
+            node_features = self.feature_projection(node_features)
         
         # Global pooling
         if self.pooling_method == 'mean':

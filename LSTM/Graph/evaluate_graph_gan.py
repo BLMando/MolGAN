@@ -304,7 +304,7 @@ def generate_and_save_samples(gan, metadata, num_samples=10, output_dir='../../o
     os.makedirs(output_dir, exist_ok=True)
     
     # Generate samples
-    sample_adj, sample_nodes = gan.generate_graphs(
+    sample_adj, sample_nodes, _ = gan.generate_graphs(
         num_samples=num_samples,
         temperature=0.5,  # Low temp for discrete
         hard=True

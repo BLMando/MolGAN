@@ -20,7 +20,7 @@ import tensorflow as tf
 from tensorflow import keras
 from datetime import datetime
 
-def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename):
+def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename, feature_matrix=None):
     """
     Save a single graph to .txt in NetworkX-readable format (adjacency matrix as edges).
     
@@ -29,6 +29,7 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename):
         node_matrix: (max_nodes, num_activities) node labels
         idx_to_activity: Dict for activity names
         filename: Output .txt file path
+        feature_matrix: (max_nodes, num_features) temporal features (optional)
     """
     max_nodes = adj_matrix.shape[0]
     num_activities = node_matrix.shape[1]
@@ -63,6 +64,15 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename):
                 if has_edge:
                     f.write(f"Edge {source} {target}\n")
 
+        # Write temporal features if provided
+        if feature_matrix is not None:
+            f.write("\n# Temporal Features: node_id: norm_time trace_time prev_event_time\n")
+            for node_id in range(max_nodes):
+                # Only write features for existing nodes (non-zero activity)
+                if np.sum(node_matrix[node_id]) > 0:
+                    feats = feature_matrix[node_id]
+                    f.write(f"Features {node_id}: {feats[0]:.4f} {feats[1]:.4f} {feats[2]:.4f}\n")
+
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent))
 
@@ -80,10 +90,10 @@ class SampleGraphsCallback(keras.callbacks.Callback):
     
     def on_epoch_end(self, epoch, logs=None):
         if (epoch + 1) % self.interval == 0:
-            print(f'\n🎨 Generating {self.num_samples} sample graphs at epoch {epoch + 1}...')
+            print(f'\n Generating {self.num_samples} sample graphs at epoch {epoch + 1}...')
             
             # Generate samples
-            sample_adj, sample_nodes = self.model.generate_graphs(
+            sample_adj, sample_nodes, sample_features = self.model.generate_graphs(
                 num_samples=self.num_samples,
                 temperature=0.5,
                 hard=True
@@ -93,8 +103,9 @@ class SampleGraphsCallback(keras.callbacks.Callback):
             for i in range(self.num_samples):
                 adj = sample_adj[i]
                 nodes = sample_nodes[i]
+                features = sample_features[i]
                 filename = self.output_dir / f'epoch_{epoch + 1}_sample_{i}.txt'
-                save_graph_to_txt(adj, nodes, self.idx_to_activity, str(filename))
+                save_graph_to_txt(adj, nodes, self.idx_to_activity, str(filename), features)
             
             print(f'  Saved to {self.output_dir}')
 
@@ -130,7 +141,7 @@ def create_callbacks(
     checkpoint_dir,
     log_dir, 
     monitor='val_d_loss', 
-    early_stopping_monitor='val_g_loss',
+    early_stopping_monitor='val_constraint_loss',
     patience=15
     ):
     """
@@ -207,7 +218,7 @@ def create_callbacks(
     # 5. Custom LR Scheduler - Exponential decay for both optimizers
     # ================================================================
     lr_scheduler = DualLearningRateScheduler(
-        decay_rate=0.95,
+        decay_rate=0.99,
         min_lr=1e-7,
         verbose=1
     )
@@ -247,6 +258,7 @@ def train_graph_gan(
     lambda_structure=15.0,
     lambda_degree=10.0,
     lambda_sparsity=0.0,
+    lambda_time_monotonic=10.0,
     batch_size=32,
     epochs=500,
     validation_split=0.1,
@@ -263,7 +275,7 @@ def train_graph_gan(
     temp_min=0.5,
     temp_decay=0.99995,
     # Early stopping
-    early_stopping_patience=200,
+    early_stopping_patience=30,
     seed=42
 ):
     """
@@ -285,6 +297,7 @@ def train_graph_gan(
         lambda_structure: Structural validity (loop prevention) weight
         lambda_degree: Degree constraint weight
         lambda_sparsity: Sparsity (varying node counts) weight
+        lambda_time_monotonic: Monotonic time weight
         batch_size: Training batch size
         epochs: Maximum epochs
         validation_split: Fraction of data for validation
@@ -311,7 +324,7 @@ def train_graph_gan(
     # ================================================================
     # 1. LOAD DATA
     # ================================================================
-    print(f'\n📂 Loading data from: {data_path}')
+    print(f'\n Loading data from: {data_path}')
 
     data = load_ig_for_gan(data_path, max_trace_nodes=max_nodes)
 
@@ -334,7 +347,7 @@ def train_graph_gan(
     # ================================================================
     # 2. CREATE DATASET
     # ================================================================
-    print('\n🔧 Creating dataset...')
+    print('\n Creating dataset...')
     
     if min_graph_size is not None or max_graph_size is not None:
         print(f'  Filtering graphs by size:')
@@ -347,7 +360,7 @@ def train_graph_gan(
         traces=graphs,
         activity_to_idx=vocab['activity_to_idx'],
         max_nodes=max_nodes,
-        include_features=False,  # Don't include temporal features for now
+        include_features=True,  # Enable temporal features
         verbose=True,
         min_graph_size=min_graph_size,
         max_graph_size=max_graph_size
@@ -356,10 +369,12 @@ def train_graph_gan(
     # Get matrices
     adjacency_matrices = np.array(dataset.adjacency_matrices)
     node_matrices = np.array(dataset.node_matrices)
+    feature_matrices = np.array(dataset.feature_matrices)
     #num_edge_types = dataset.num_edge_types  # Not needed anymore (binary adjacency)
 
     print(f'  Adjacency shape: {adjacency_matrices.shape}')
     print(f'  Nodes shape: {node_matrices.shape}')
+    print(f'  Features shape: {feature_matrices.shape}')
     # print(f'  Edge types: {num_edge_types}')  # No longer applicable (binary)
 
     # Compute activity frequencies for constraints
@@ -373,7 +388,7 @@ def train_graph_gan(
     # ================================================================
     # 3. TRAIN/VAL SPLIT
     # ================================================================
-    print(f'\n🔀 Splitting data (validation: {validation_split*100:.0f}%)')
+    print(f'\n Splitting data (validation: {validation_split*100:.0f}%)')
 
     num_samples = len(adjacency_matrices)
     num_val = int(num_samples * validation_split)
@@ -386,25 +401,27 @@ def train_graph_gan(
 
     train_adj = adjacency_matrices[train_indices]
     train_nodes = node_matrices[train_indices]
+    train_features = feature_matrices[train_indices]
     val_adj = adjacency_matrices[val_indices]
     val_nodes = node_matrices[val_indices]
+    val_features = feature_matrices[val_indices]
 
     print(f'  Training samples: {num_train}')
     print(f'  Validation samples: {num_val}')
 
     # Create TF datasets
     train_dataset = tf.data.Dataset.from_tensor_slices(
-        (train_adj, train_nodes))
+        (train_adj, train_nodes, train_features))
     train_dataset = train_dataset.shuffle(1000).batch(
         batch_size).prefetch(tf.data.AUTOTUNE)
 
-    val_dataset = tf.data.Dataset.from_tensor_slices((val_adj, val_nodes))
+    val_dataset = tf.data.Dataset.from_tensor_slices((val_adj, val_nodes, val_features))
     val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
     # ================================================================
     # 4. CREATE MODEL
     # ================================================================
-    print('\n🏗️  Creating Graph ProcessGAN...')
+    print('\n Creating Graph ProcessGAN...')
 
     gan = GraphProcessGAN(
         max_nodes=max_nodes,
@@ -424,6 +441,7 @@ def train_graph_gan(
         lambda_structure=lambda_structure,
         lambda_degree=lambda_degree,
         lambda_sparsity=lambda_sparsity,
+        lambda_time_monotonic=lambda_time_monotonic,
         temp_start=temp_start,
         temp_min=temp_min,
         temp_decay=temp_decay
@@ -447,7 +465,7 @@ def train_graph_gan(
     # ================================================================
     # 5. COMPILE MODEL
     # ================================================================
-    print('\n⚙️  Compiling model...')
+    print('\n Compiling model...')
 
     d_optimizer = keras.optimizers.Adam(
         learning_rate=d_lr, beta_1=beta_1, beta_2=beta_2)
@@ -463,7 +481,7 @@ def train_graph_gan(
     # ================================================================
     # 6. SETUP CALLBACKS
     # ================================================================
-    print('\n📊 Setting up callbacks...')
+    print('\n Setting up callbacks...')
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     checkpoint_dir = os.path.join(output_dir, 'checkpoints', timestamp)
@@ -495,7 +513,7 @@ def train_graph_gan(
     # ================================================================
     # 7. TRAIN
     # ================================================================
-    print('\n🚀 Starting training...')
+    print('\n Starting training...')
     print('='*80)
 
     history = gan.fit(
@@ -506,12 +524,12 @@ def train_graph_gan(
         verbose=1
     )
 
-    print('\n✅ Training complete!')
+    print('\n Training complete!')
 
     # ================================================================
     # 8. SAVE FINAL MODEL
     # ================================================================
-    print('\n💾 Saving final model...')
+    print('\n Saving final model...')
 
     final_path = os.path.join(checkpoint_dir, 'final')
     os.makedirs(final_path, exist_ok=True)
@@ -540,9 +558,9 @@ def train_graph_gan(
     # ================================================================
     # 9. GENERATE SAMPLE GRAPHS
     # ================================================================
-    print('\n🎨 Generating sample graphs...')
+    print('\n Generating sample graphs...')
 
-    sample_adj, sample_nodes = gan.generate_graphs(
+    sample_adj, sample_nodes, sample_features = gan.generate_graphs(
         num_samples=100,
         temperature=0.5,
         hard=True
@@ -551,13 +569,14 @@ def train_graph_gan(
     print(f'  Generated {len(sample_adj)} graphs')
     print(f'  Sample adjacency shape: {sample_adj.shape}')
     print(f'  Sample nodes shape: {sample_nodes.shape}')
+    print(f'  Sample features shape: {sample_features.shape}')
 
     # Save samples
     np.save(os.path.join(final_path, 'sample_adjacency.npy'), sample_adj)
     np.save(os.path.join(final_path, 'sample_nodes.npy'), sample_nodes)
 
     print('\n' + '='*80)
-    print('TRAINING COMPLETE! 🎉')
+    print('TRAINING COMPLETE!')
     print('='*80)
     print(f'\nCheckpoint directory: {checkpoint_dir}')
     print(f'TensorBoard logs: {log_dir}')
@@ -596,13 +615,21 @@ if __name__ == '__main__':
                         help='Discriminator updates per generator update')
     parser.add_argument('--lambda-gp', type=float, default=10.0,
                         help='Gradient penalty weight')
-    parser.add_argument('--lambda-constraint', type=float, default=2,
+    parser.add_argument('--lambda-constraint', type=float, default=1.0,
                         help='Constraint loss weight')
+    parser.add_argument('--lambda-structure', type=float, default=5.0,
+                        help='Structural validity weight')
+    parser.add_argument('--lambda-degree', type=float, default=5.0,
+                        help='Degree constraint weight')
+    parser.add_argument('--lambda-sparsity', type=float, default=0.1,
+                        help='Sparsity loss weight')
+    parser.add_argument('--lambda-time-monotonic', type=float, default=10.0,
+                        help='Monotonic time loss weight')
 
     # Optimizer
-    parser.add_argument('--d-lr', type=float, default=0.0001,
+    parser.add_argument('--d-lr', type=float, default=0.0002,
                         help='Discriminator learning rate')
-    parser.add_argument('--g-lr', type=float, default=0.0002,
+    parser.add_argument('--g-lr', type=float, default=0.0001,
                         help='Generator learning rate')
 
     # Other
@@ -629,5 +656,6 @@ if __name__ == '__main__':
         validation_split=args.validation_split,
         seed=args.seed,
         min_graph_size=5,
-        max_graph_size=args.max_nodes
+        max_graph_size=args.max_nodes,
+        lambda_time_monotonic=args.lambda_time_monotonic
     )

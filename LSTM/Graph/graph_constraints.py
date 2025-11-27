@@ -37,7 +37,8 @@ class GraphProcessConstraints:
                  lambda_degree=5.0,
                  lambda_path=3.0,
                  lambda_node_on_path=5.0,
-                 lambda_sparsity=0.0):
+                 lambda_sparsity=0.0,
+                 lambda_time_monotonic=10.0):
         """
         Args:
             start_idx: Index of START activity
@@ -63,7 +64,11 @@ class GraphProcessConstraints:
         self.lambda_degree = lambda_degree
         self.lambda_path = lambda_path
         self.lambda_node_on_path = lambda_node_on_path
+        self.lambda_node_on_path = lambda_node_on_path
         self.lambda_sparsity = lambda_sparsity
+        self.lambda_time_monotonic = lambda_time_monotonic
+        self.lambda_time_start_end = 2.0  # Weight for START/END time zero constraint
+        self.lambda_time_parallel = 2.0   # Weight for parallel nodes time constraint
 
     def start_node_loss(self, nodes):
         """
@@ -342,11 +347,10 @@ class GraphProcessConstraints:
         # === COMBINED LOSS ===
         # VERY HIGH weights for aggressive loop prevention
         total_loss = (
-            20.0 * loss_self_loops +    # Self-loops - MASSIVELY increased
-            25.0 * loss_2cycles +       # Bidirectional edges - MASSIVELY increased
-            15.0 * loss_cycles          # General cycles - MASSIVELY increased
+            1.0 * loss_self_loops +    # Self-loops - MASSIVELY increased
+            1.0 * loss_2cycles +       # Bidirectional edges - MASSIVELY increased
+            1.0 * loss_cycles          # General cycles - MASSIVELY increased
         )
-        
         return total_loss
 
     # START part kept in start_node_loss (already has count constraint)
@@ -402,6 +406,79 @@ class GraphProcessConstraints:
         )
         
         return total_loss
+
+    def start_end_time_loss(self, nodes, features):
+        """
+        Constraint: START and END nodes should have 0 duration/time
+        
+        Args:
+            nodes: Node matrix (batch, max_nodes, num_activities)
+            features: Feature matrix (batch, max_nodes, num_features)
+                      0: norm_time, 1: trace_time, 2: prev_event_time
+            
+        Returns:
+            Loss penalizing non-zero times for START/END
+        """
+        if features is None:
+            return 0.0
+            
+        # Get START and END probabilities
+        start_probs = nodes[:, :, self.start_idx]  # (batch, max_nodes)
+        end_probs = nodes[:, :, self.end_idx]      # (batch, max_nodes)
+        
+        # Features: we want trace_time (idx 1) and prev_event_time (idx 2) to be 0
+        # norm_time (idx 0) might not be 0 for END, but should be for START
+        
+        # START constraints: all times should be 0
+        start_time_penalty = start_probs * tf.reduce_sum(tf.square(features), axis=2)
+        
+        # END constraints: trace_time and prev_event_time should be 0 (instantaneous)
+        # Note: norm_time depends on the trace, so we don't constrain it to 0
+        end_time_penalty = end_probs * tf.reduce_sum(tf.square(features[:, :, 1:]), axis=2)
+        
+        loss = tf.reduce_mean(start_time_penalty + end_time_penalty)
+        return loss
+
+    def parallel_time_loss(self, adjacency, features):
+        """
+        Constraint: Parallel nodes (same source) should have similar start times
+        
+        Args:
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
+            features: Feature matrix (batch, max_nodes, num_features)
+            
+        Returns:
+            Loss penalizing time differences between parallel nodes
+        """
+        if features is None:
+            return 0.0
+            
+        # Adjacency[b, s, t] = 1 means edge s -> t
+        # If s -> t1 and s -> t2, then t1 and t2 are parallel
+        
+        # We want to compare features of t1 and t2
+        # Expand features to (batch, 1, max_nodes, num_features)
+        features_exp = tf.expand_dims(features, axis=1)
+        
+        # Calculate pairwise time differences: (batch, max_nodes, max_nodes)
+        # We focus on norm_time (idx 0) and trace_time (idx 1)
+        time_diffs = tf.abs(features_exp[:, :, :, 0] - tf.transpose(features_exp[:, :, :, 0], perm=[0, 2, 1]))
+        
+        # Identify parallel siblings:
+        # Two nodes t1, t2 are siblings if they share a parent s
+        # adjacency[:, s, t1] * adjacency[:, s, t2]
+        
+        # Sum over parents s to get "sibling matrix" (batch, t1, t2)
+        # siblings[b, t1, t2] > 0 if t1 and t2 share a parent
+        siblings = tf.matmul(tf.transpose(adjacency, perm=[0, 2, 1]), adjacency)
+        
+        # Remove diagonal (self-sibling)
+        mask = 1.0 - tf.eye(tf.shape(adjacency)[1])
+        siblings = siblings * tf.expand_dims(mask, axis=0)
+        
+        # Penalize time differences for siblings
+        loss = tf.reduce_mean(siblings * time_diffs)
+        return loss
 
     def connectivity_loss(self, adjacency, nodes):
         """
@@ -598,7 +675,7 @@ class GraphProcessConstraints:
         
         return loss
 
-    def total_constraint_loss(self, adjacency, nodes):
+    def total_constraint_loss(self, adjacency, nodes, features=None):
         """
         Compute total constraint loss
 
@@ -618,7 +695,13 @@ class GraphProcessConstraints:
         degree_loss = self.degree_constraint_loss(adjacency, nodes)
         path_loss = self.path_existence_loss(adjacency, nodes)
         node_on_path_loss = self.nodes_on_path_loss(adjacency, nodes)
+        node_on_path_loss = self.nodes_on_path_loss(adjacency, nodes)
         sparsity_loss = self.sparsity_loss(nodes, adjacency)
+        
+        # Temporal losses
+        time_start_end_loss = self.start_end_time_loss(nodes, features)
+        time_parallel_loss = self.parallel_time_loss(adjacency, features)
+        time_monotonic_loss = self.monotonic_time_loss(adjacency, features)
 
         # Weighted sum
         total_loss = (
@@ -630,12 +713,16 @@ class GraphProcessConstraints:
             self.lambda_degree * degree_loss +
             self.lambda_path * path_loss +
             self.lambda_node_on_path * node_on_path_loss +
-            self.lambda_sparsity * sparsity_loss
+            self.lambda_node_on_path * node_on_path_loss +
+            self.lambda_sparsity * sparsity_loss +
+            self.lambda_time_start_end * time_start_end_loss +
+            self.lambda_time_parallel * time_parallel_loss +
+            self.lambda_time_monotonic * time_monotonic_loss
         )
 
         return total_loss
 
-    def get_individual_losses(self, adjacency, nodes):
+    def get_individual_losses(self, adjacency, nodes, features=None):
         """
         Get dictionary of individual constraint losses for logging
 
@@ -655,5 +742,69 @@ class GraphProcessConstraints:
             'degree_loss': self.degree_constraint_loss(adjacency, nodes),
             'path_loss': self.path_existence_loss(adjacency, nodes),
             'node_on_path_loss': self.nodes_on_path_loss(adjacency, nodes),
+            'node_on_path_loss': self.nodes_on_path_loss(adjacency, nodes),
             'sparsity_loss': self.sparsity_loss(nodes, adjacency),
+            'time_start_end_loss': self.start_end_time_loss(nodes, features),
+            'time_parallel_loss': self.parallel_time_loss(adjacency, features),
+            'time_monotonic_loss': self.monotonic_time_loss(adjacency, features),
         }
+
+    def monotonic_time_loss(self, adjacency, features):
+        """
+        Constraint: Time must be monotonic along edges
+        
+        For every edge u -> v:
+        1. trace_time(v) > trace_time(u)  (strictly increasing)
+        2. prev_event_time(v) ≈ trace_time(v) - trace_time(u) (consistency)
+        
+        Note: norm_time is NOT constrained to be monotonic as it may represent 
+        cyclic time (e.g. time from start of week/month).
+        
+        Args:
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
+            features: Feature matrix (batch, max_nodes, num_features)
+                      0: norm_time, 1: trace_time, 2: prev_event_time
+            
+        Returns:
+            Loss penalizing temporal violations
+        """
+        if features is None:
+            return 0.0
+            
+        # Features shape: (batch, max_nodes, num_features)
+        # Expand for pairwise comparison: (batch, source, target, num_features)
+        features_source = tf.expand_dims(features, axis=2)  # (batch, max_nodes, 1, feats)
+        features_target = tf.expand_dims(features, axis=1)  # (batch, 1, max_nodes, feats)
+        
+        # Extract specific features
+        # 0: norm_time, 1: trace_time, 2: prev_event_time
+        # norm_time_s = features_source[:, :, :, 0] # Not used
+        # norm_time_t = features_target[:, :, :, 0] # Not used
+        
+        trace_time_s = features_source[:, :, :, 1]
+        trace_time_t = features_target[:, :, :, 1]
+        
+        prev_time_t = features_target[:, :, :, 2]
+        
+        # Adjacency mask: only check where edges exist
+        # adjacency is (batch, source, target)
+        edge_mask = adjacency
+        
+        # 1. Monotonic Trace Time: trace_time(t) > trace_time(s)
+        # Violation if trace_time(t) <= trace_time(s)
+        # Penalty = ReLU(trace_time(s) - trace_time(t) + margin)
+        margin = 0.01 # Minimum time increment
+        time_violation = tf.nn.relu(trace_time_s - trace_time_t + margin)
+        loss_monotonic = tf.reduce_mean(edge_mask * time_violation)
+        
+        # 2. Consistency: prev_event_time(t) ≈ trace_time(t) - trace_time(s)
+        # This links the local delta (prev_event) with the global accumulator (trace_time)
+        delta_trace = trace_time_t - trace_time_s
+        # We only care about this consistency if the edge exists AND time is monotonic
+        # If time is not monotonic (delta_trace < 0), the first loss handles it
+        # So we check error |prev_time_t - delta_trace|
+        consistency_error = tf.abs(prev_time_t - delta_trace)
+        loss_consistency = tf.reduce_mean(edge_mask * consistency_error)
+        
+        return 2.0 * loss_monotonic + 1.5 * loss_consistency
+

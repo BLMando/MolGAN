@@ -180,8 +180,12 @@ class GraphDataset:
         Returns:
             Node matrix of shape (max_nodes, num_activities)
         """
+        # Initialize with PAD token (index 0)
+        # This ensures padding nodes are explicitly represented as PAD
+        # instead of all-zeros, matching the generator's softmax output capability
         nodes = np.zeros(
             (self.max_nodes, self.num_activities), dtype=np.float32)
+        nodes[:, 0] = 1.0  # Set all to PAD initially
 
         vertices = trace['vertices']
         for idx, vertex in enumerate(vertices):
@@ -190,6 +194,9 @@ class GraphDataset:
 
             activity = vertex['activity']
             activity_idx = self.activity_to_idx.get(activity, 0)  # 0 = <PAD>
+            
+            # Clear PAD and set actual activity
+            nodes[idx, 0] = 0.0
             nodes[idx, activity_idx] = 1.0
 
         return nodes

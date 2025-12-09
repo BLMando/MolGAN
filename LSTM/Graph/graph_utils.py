@@ -146,6 +146,19 @@ def global_mean_pool(node_features):
     return tf.reduce_mean(node_features, axis=1)
 
 
+def global_sum_pool(node_features):
+    """
+    Global sum pooling over graph nodes
+
+    Args:
+        node_features: Node feature tensor (batch, num_nodes, features)
+
+    Returns:
+        Pooled features (batch, features)
+    """
+    return tf.reduce_sum(node_features, axis=1)
+
+
 def global_max_pool(node_features):
     """
     Global max pooling over graph nodes

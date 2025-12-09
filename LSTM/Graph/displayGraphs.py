@@ -35,7 +35,7 @@ def load_graph_from_txt(filename):
     return G, edges_ordered
 
 # Path where your samples were saved
-samples_dir = Path("../../output_graph_gan/samples")
+samples_dir = Path("../../output_graph_gan/samples/20251201_105053")
 
 if not samples_dir.exists():
     raise FileNotFoundError(f"Samples directory not found: {samples_dir}")

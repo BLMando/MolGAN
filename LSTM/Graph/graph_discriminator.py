@@ -13,7 +13,8 @@ from tensorflow import keras
 from tensorflow.keras import layers
 import numpy as np
 from rgcn_layers import RGCNStack
-from graph_utils import global_mean_pool
+from rgcn_layers import RGCNStack
+from graph_utils import global_mean_pool, global_sum_pool
 
 
 class GraphDiscriminator(keras.Model):
@@ -94,6 +95,8 @@ class GraphDiscriminator(keras.Model):
         # Global pooling to get graph-level representation
         if self.pooling_method == 'mean':
             graph_features = global_mean_pool(node_features)
+        elif self.pooling_method == 'sum':
+            graph_features = global_sum_pool(node_features)
         elif self.pooling_method == 'max':
             graph_features = tf.reduce_max(node_features, axis=1)
         else:
@@ -180,6 +183,8 @@ class GraphDiscriminatorWithFeatures(GraphDiscriminator):
         # Global pooling
         if self.pooling_method == 'mean':
             graph_features = global_mean_pool(node_features)
+        elif self.pooling_method == 'sum':
+            graph_features = global_sum_pool(node_features)
         else:
             graph_features = tf.reduce_max(node_features, axis=1)
         

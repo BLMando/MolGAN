@@ -70,7 +70,7 @@ class GraphProcessConstraints:
         self.lambda_time_start_end = 2.0  # Weight for START/END time zero constraint
         self.lambda_time_parallel = 2.0   # Weight for parallel nodes time constraint
 
-    def start_node_loss(self, nodes):
+    def start_node_loss(self, nodes, return_components=False):
         """
         Constraint: First node should be START and ONLY first node
         
@@ -81,6 +81,7 @@ class GraphProcessConstraints:
         
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
+            return_components: If True, return (total_loss, components_dict)
 
         Returns:
             Loss encouraging first node to be START (and only first node)
@@ -106,9 +107,18 @@ class GraphProcessConstraints:
         loss_concentration = tf.reduce_mean(max_start_elsewhere)
         
         # Combine all penalties
-        return loss_first + 3.0 * loss_others + 2.0 * loss_count + 2.0 * loss_concentration
+        total_loss = loss_first + 3.0 * loss_others + 2.0 * loss_count + 2.0 * loss_concentration
+        
+        if return_components:
+            return total_loss, {
+                'start_loss_first': loss_first,
+                'start_loss_others': loss_others,
+                'start_loss_count': loss_count,
+                'start_loss_concentration': loss_concentration
+            }
+        return total_loss
 
-    def end_node_loss(self, nodes, adjacency):
+    def end_node_loss(self, nodes, adjacency, return_components=False):
         """
         UNIFIED END Constraint: Strong enforcement like START node
         
@@ -122,6 +132,7 @@ class GraphProcessConstraints:
         Args:
             nodes: Node matrix (batch, max_nodes, num_activities)
             adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
+            return_components: If True, return (total_loss, components_dict)
 
         Returns:
             Combined loss for all END-related constraints
@@ -137,8 +148,19 @@ class GraphProcessConstraints:
 
         # === COMPONENT 1: Terminal Positioning (identify best END position) ===
         # Find the terminal node (lowest out-degree among active nodes)
-        terminal_score = active_mask * tf.nn.sigmoid(-(out_degrees - 0.1) * 20.0)
-        attention_weights = tf.nn.softmax(terminal_score + 1e-10, axis=1)
+        # Logits: High for out-degree 0, Low for out-degree > 0
+        terminal_logits = -(out_degrees - 0.1) * 20.0
+        
+        # Mask out PAD nodes and non-terminal nodes (force them to -inf)
+        # We want to focus ONLY on active nodes that look like terminals
+        # Actually, we just need to mask PAD nodes. Non-terminals will have low logits anyway (-18.0).
+        # But to be safe and sharp, we can mask them too if we want, but the logits should handle it.
+        # The main issue was PAD nodes having out-degree 0 -> logit 2.0 -> high score.
+        
+        # Mask PAD nodes: set logits to -1e9
+        terminal_logits = terminal_logits - (1.0 - active_mask) * 1e9
+        
+        attention_weights = tf.nn.softmax(terminal_logits, axis=1)
         attention_weights_exp = tf.expand_dims(attention_weights, axis=-1)
         
         # Weighted sum - encourage END at most terminal position
@@ -184,6 +206,15 @@ class GraphProcessConstraints:
             2.0 * loss_zero_out           # No out-edges (reduced from 3.0)
         )
         
+        if return_components:
+            return total_loss, {
+                'end_loss_positioning': loss_positioning,
+                'end_loss_non_terminal': loss_non_terminal,
+                'end_loss_count': loss_count,
+                'end_loss_concentration': loss_concentration,
+                'end_loss_second': loss_second,
+                'end_loss_zero_out': loss_zero_out
+            }
         return total_loss
 
     def activity_frequency_loss(self, nodes): #serve a mantenere la stessa distribuzione delle attività --> verificare che non crea problemi con i PAD
@@ -259,6 +290,11 @@ class GraphProcessConstraints:
         other_in_penalty = other_mask * tf.nn.relu(1.0 - in_degrees)
         other_out_penalty = other_mask * tf.nn.relu(1.0 - out_degrees)
         loss += tf.reduce_mean(other_in_penalty + other_out_penalty)
+        
+        # PAD nodes: exactly 0 in-degree and 0 out-degree
+        pad_probs = nodes[:, :, self.pad_idx]
+        pad_degree_penalty = pad_probs * (in_degrees + out_degrees)
+        loss += tf.reduce_mean(pad_degree_penalty)
         
         return loss
 
@@ -453,23 +489,18 @@ class GraphProcessConstraints:
         if features is None:
             return 0.0
             
-        # Adjacency[b, s, t] = 1 means edge s -> t
-        # If s -> t1 and s -> t2, then t1 and t2 are parallel
-        
-        # We want to compare features of t1 and t2
         # Expand features to (batch, 1, max_nodes, num_features)
         features_exp = tf.expand_dims(features, axis=1)
         
-        # Calculate pairwise time differences: (batch, max_nodes, max_nodes)
-        # We focus on norm_time (idx 0) and trace_time (idx 1)
-        time_diffs = tf.abs(features_exp[:, :, :, 0] - tf.transpose(features_exp[:, :, :, 0], perm=[0, 2, 1]))
+        # Difference in norm_time
+        diff_norm = tf.abs(features_exp[:, :, :, 0] - tf.transpose(features_exp[:, :, :, 0], perm=[0, 2, 1]))
         
-        # Identify parallel siblings:
-        # Two nodes t1, t2 are siblings if they share a parent s
-        # adjacency[:, s, t1] * adjacency[:, s, t2]
+        # Difference in trace_time
+        diff_trace = tf.abs(features_exp[:, :, :, 1] - tf.transpose(features_exp[:, :, :, 1], perm=[0, 2, 1]))
         
-        # Sum over parents s to get "sibling matrix" (batch, t1, t2)
-        # siblings[b, t1, t2] > 0 if t1 and t2 share a parent
+        # Combined difference
+        time_diffs = diff_norm + diff_trace
+        
         siblings = tf.matmul(tf.transpose(adjacency, perm=[0, 2, 1]), adjacency)
         
         # Remove diagonal (self-sibling)
@@ -479,6 +510,56 @@ class GraphProcessConstraints:
         # Penalize time differences for siblings
         loss = tf.reduce_mean(siblings * time_diffs)
         return loss
+
+
+    def monotonic_time_loss(self, adjacency, features):
+        """
+        Constraint: Time must be monotonic along edges
+        
+        For every edge u -> v:
+        1. trace_time(v) > trace_time(u)  (strictly increasing)
+        2. prev_event_time(v) ≈ trace_time(v) - trace_time(u) (consistency)
+        
+        Note: norm_time is NOT constrained to be monotonic as it may represent 
+        cyclic time (e.g. time from start of week/month).
+        
+        Args:
+            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
+            features: Feature matrix (batch, max_nodes, num_features)
+                      0: norm_time, 1: trace_time, 2: prev_event_time
+            
+        Returns:
+            Loss penalizing temporal violations
+        """
+        if features is None:
+            return 0.0
+            
+        # Features shape: (batch, max_nodes, num_features)
+        features_source = tf.expand_dims(features, axis=2)  # (batch, max_nodes, 1, feats)
+        features_target = tf.expand_dims(features, axis=1)  # (batch, 1, max_nodes, feats)
+        
+        # Extract specific features
+        # 0: norm_time, 1: trace_time, 2: prev_event_time        
+        trace_time_s = features_source[:, :, :, 1]
+        trace_time_t = features_target[:, :, :, 1]
+        
+        prev_time_t = features_target[:, :, :, 2]
+        
+        # Adjacency mask: only check where edges exist
+        edge_mask = adjacency
+        
+        # Monotonic Trace Time
+        margin = 0.01 # Minimum time increment
+        time_violation = tf.nn.relu(trace_time_s - trace_time_t + margin)
+        loss_monotonic = tf.reduce_mean(edge_mask * time_violation)
+        
+        # Consistency: prev_event_time(t) ≈ trace_time(t) - trace_time(s)
+        delta_trace = trace_time_t - trace_time_s
+        consistency_error = tf.abs(prev_time_t - delta_trace)
+        loss_consistency = tf.reduce_mean(edge_mask * consistency_error)
+        
+        return 2.0 * loss_monotonic + 1.5 * loss_consistency
+
 
     def connectivity_loss(self, adjacency, nodes):
         """
@@ -600,6 +681,8 @@ class GraphProcessConstraints:
         path_strength = tf.squeeze(path_strength, axis=[1, 2])  # (batch,)
         
         # Penalize weak paths: loss is high when path_strength is low
+        # Clip path_strength to [0, 1] to prevent negative loss if multiple paths exist
+        path_strength = tf.clip_by_value(path_strength, 0.0, 1.0)
         loss = tf.reduce_mean(1.0 - path_strength)
         
         return loss
@@ -618,9 +701,8 @@ class GraphProcessConstraints:
         Returns:
             Loss penalizing nodes not on any START-END path
         """
-        # Adjacency is already binary (batch, max_nodes, max_nodes)
         
-        # 1. Compute forward reachability from START (nodes reachable from START)
+        # Compute forward reachability from START
         forward_reach = adjacency
         current_forward = adjacency
         for _ in range(10):
@@ -628,8 +710,7 @@ class GraphProcessConstraints:
             current_forward = tf.minimum(current_forward, 1.0)
             forward_reach = tf.minimum(forward_reach + current_forward, 1.0)
         
-        # 2. Compute backward reachability to END (nodes that can reach END)
-        # Transpose adjacency for backward propagation
+        # Compute backward reachability to END
         adjacency_T = tf.transpose(adjacency, perm=[0, 2, 1])
         backward_reach = adjacency_T
         current_backward = adjacency_T
@@ -637,7 +718,7 @@ class GraphProcessConstraints:
             current_backward = tf.matmul(current_backward, adjacency_T)
             current_backward = tf.minimum(current_backward, 1.0)
             backward_reach = tf.minimum(backward_reach + current_backward, 1.0)
-        # Transpose back to (batch, from, to)
+
         backward_reach = tf.transpose(backward_reach, perm=[0, 2, 1])
         
         # Get START and END node positions
@@ -648,13 +729,9 @@ class GraphProcessConstraints:
         start_probs_exp = tf.expand_dims(start_probs, axis=1)  # (batch, 1, max_nodes)
         end_probs_exp = tf.expand_dims(end_probs, axis=-1)  # (batch, max_nodes, 1)
         
-        # For each node: can it be reached from START?
-        # (batch, 1, max_nodes) @ (batch, max_nodes, max_nodes) -> (batch, 1, max_nodes)
         reachable_from_start = tf.matmul(start_probs_exp, forward_reach)
         reachable_from_start = tf.squeeze(reachable_from_start, axis=1)  # (batch, max_nodes)
         
-        # For each node: can it reach END?
-        # (batch, max_nodes, max_nodes) @ (batch, max_nodes, 1) -> (batch, max_nodes, 1)
         can_reach_end = tf.matmul(backward_reach, end_probs_exp)
         can_reach_end = tf.squeeze(can_reach_end, axis=-1)  # (batch, max_nodes)
         
@@ -662,9 +739,9 @@ class GraphProcessConstraints:
         # 1. Reachable from START, AND
         # 2. Can reach END
         on_path = reachable_from_start * can_reach_end  # (batch, max_nodes)
+        on_path = tf.clip_by_value(on_path, 0.0, 1.0)
         
         # Identify active nodes (not PAD, not START, not END)
-        # These are the intermediate nodes that should be on paths
         active_mask = 1.0 - nodes[:, :, self.pad_idx]  # All non-PAD
         intermediate_mask = active_mask - start_probs - end_probs  # Remove START and END
         intermediate_mask = tf.maximum(intermediate_mask, 0.0)  # Ensure non-negative
@@ -695,7 +772,6 @@ class GraphProcessConstraints:
         degree_loss = self.degree_constraint_loss(adjacency, nodes)
         path_loss = self.path_existence_loss(adjacency, nodes)
         node_on_path_loss = self.nodes_on_path_loss(adjacency, nodes)
-        node_on_path_loss = self.nodes_on_path_loss(adjacency, nodes)
         sparsity_loss = self.sparsity_loss(nodes, adjacency)
         
         # Temporal losses
@@ -712,7 +788,6 @@ class GraphProcessConstraints:
             self.lambda_structure * struct_loss +
             self.lambda_degree * degree_loss +
             self.lambda_path * path_loss +
-            self.lambda_node_on_path * node_on_path_loss +
             self.lambda_node_on_path * node_on_path_loss +
             self.lambda_sparsity * sparsity_loss +
             self.lambda_time_start_end * time_start_end_loss +
@@ -733,78 +808,28 @@ class GraphProcessConstraints:
         Returns:
             Dictionary with individual losses
         """
-        return {
-            'start_loss': self.start_node_loss(nodes),
-            'end_loss': self.end_node_loss(nodes, adjacency),
+        start_loss, start_components = self.start_node_loss(nodes, return_components=True)
+        end_loss, end_components = self.end_node_loss(nodes, adjacency, return_components=True)
+        
+        losses = {
+            'start_loss': start_loss,
+            'end_loss': end_loss,
             'frequency_loss': self.activity_frequency_loss(nodes),
             'connectivity_loss': self.connectivity_loss(adjacency, nodes),
             'structural_loss': self.structural_validity_loss(adjacency),
             'degree_loss': self.degree_constraint_loss(adjacency, nodes),
             'path_loss': self.path_existence_loss(adjacency, nodes),
             'node_on_path_loss': self.nodes_on_path_loss(adjacency, nodes),
-            'node_on_path_loss': self.nodes_on_path_loss(adjacency, nodes),
             'sparsity_loss': self.sparsity_loss(nodes, adjacency),
             'time_start_end_loss': self.start_end_time_loss(nodes, features),
             'time_parallel_loss': self.parallel_time_loss(adjacency, features),
             'time_monotonic_loss': self.monotonic_time_loss(adjacency, features),
         }
+        
+        # Add components
+        losses.update(start_components)
+        losses.update(end_components)
+        
+        return losses
 
-    def monotonic_time_loss(self, adjacency, features):
-        """
-        Constraint: Time must be monotonic along edges
-        
-        For every edge u -> v:
-        1. trace_time(v) > trace_time(u)  (strictly increasing)
-        2. prev_event_time(v) ≈ trace_time(v) - trace_time(u) (consistency)
-        
-        Note: norm_time is NOT constrained to be monotonic as it may represent 
-        cyclic time (e.g. time from start of week/month).
-        
-        Args:
-            adjacency: Binary adjacency matrix (batch, max_nodes, max_nodes)
-            features: Feature matrix (batch, max_nodes, num_features)
-                      0: norm_time, 1: trace_time, 2: prev_event_time
-            
-        Returns:
-            Loss penalizing temporal violations
-        """
-        if features is None:
-            return 0.0
-            
-        # Features shape: (batch, max_nodes, num_features)
-        # Expand for pairwise comparison: (batch, source, target, num_features)
-        features_source = tf.expand_dims(features, axis=2)  # (batch, max_nodes, 1, feats)
-        features_target = tf.expand_dims(features, axis=1)  # (batch, 1, max_nodes, feats)
-        
-        # Extract specific features
-        # 0: norm_time, 1: trace_time, 2: prev_event_time
-        # norm_time_s = features_source[:, :, :, 0] # Not used
-        # norm_time_t = features_target[:, :, :, 0] # Not used
-        
-        trace_time_s = features_source[:, :, :, 1]
-        trace_time_t = features_target[:, :, :, 1]
-        
-        prev_time_t = features_target[:, :, :, 2]
-        
-        # Adjacency mask: only check where edges exist
-        # adjacency is (batch, source, target)
-        edge_mask = adjacency
-        
-        # 1. Monotonic Trace Time: trace_time(t) > trace_time(s)
-        # Violation if trace_time(t) <= trace_time(s)
-        # Penalty = ReLU(trace_time(s) - trace_time(t) + margin)
-        margin = 0.01 # Minimum time increment
-        time_violation = tf.nn.relu(trace_time_s - trace_time_t + margin)
-        loss_monotonic = tf.reduce_mean(edge_mask * time_violation)
-        
-        # 2. Consistency: prev_event_time(t) ≈ trace_time(t) - trace_time(s)
-        # This links the local delta (prev_event) with the global accumulator (trace_time)
-        delta_trace = trace_time_t - trace_time_s
-        # We only care about this consistency if the edge exists AND time is monotonic
-        # If time is not monotonic (delta_trace < 0), the first loss handles it
-        # So we check error |prev_time_t - delta_trace|
-        consistency_error = tf.abs(prev_time_t - delta_trace)
-        loss_consistency = tf.reduce_mean(edge_mask * consistency_error)
-        
-        return 2.0 * loss_monotonic + 1.5 * loss_consistency
-
+    

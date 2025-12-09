@@ -35,7 +35,6 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename, featur
     num_activities = node_matrix.shape[1]
     
     with open(filename, 'w') as f:
-        f.write("# Graph in NetworkX DiGraph format (adjacency matrix as edges)\n")
         f.write("# Nodes: node_id: activity\n")
         f.write("# Edges: Edge source target\n\n")
         
@@ -45,6 +44,11 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename, featur
             if np.sum(activity_probs) > 0:  # Node exists
                 activity_idx = np.argmax(activity_probs)
                 activity = idx_to_activity.get(activity_idx, f"UNK_{activity_idx}")
+                
+                # Skip PAD nodes
+                if activity == '<PAD>':
+                    continue
+                    
                 f.write(f"Node {node_id}: {activity}\n")
         
         f.write("\n")
@@ -78,12 +82,11 @@ sys.path.append(str(Path(__file__).parent))
 
 
 class SampleGraphsCallback(keras.callbacks.Callback):
-    """Callback to save sample graphs every 10 epochs"""
+    """Callback to save sample graphs every 20 epochs"""
     
-    def __init__(self, output_dir, idx_to_activity, num_samples=5, interval=10):
+    def __init__(self, output_dir, idx_to_activity, num_samples=5, interval=20):
         super().__init__()
-        self.output_dir = Path(output_dir) / 'samples'
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir = output_dir
         self.idx_to_activity = idx_to_activity
         self.num_samples = num_samples
         self.interval = interval
@@ -104,8 +107,8 @@ class SampleGraphsCallback(keras.callbacks.Callback):
                 adj = sample_adj[i]
                 nodes = sample_nodes[i]
                 features = sample_features[i]
-                filename = self.output_dir / f'epoch_{epoch + 1}_sample_{i}.txt'
-                save_graph_to_txt(adj, nodes, self.idx_to_activity, str(filename), features)
+                filename = os.path.join(self.output_dir, f'epoch_{epoch + 1}_sample_{i}.txt')
+                save_graph_to_txt(adj, nodes, self.idx_to_activity, filename, features)
             
             print(f'  Saved to {self.output_dir}')
 
@@ -259,6 +262,8 @@ def train_graph_gan(
     lambda_degree=10.0,
     lambda_sparsity=0.0,
     lambda_time_monotonic=10.0,
+    lambda_start=3.0,
+    lambda_end=6.0,
     batch_size=32,
     epochs=500,
     validation_split=0.1,
@@ -273,9 +278,9 @@ def train_graph_gan(
     # Temperature scheduling
     temp_start=5.0,
     temp_min=0.5,
-    temp_decay=0.99995,
+    temp_decay=0.9995,
     # Early stopping
-    early_stopping_patience=30,
+    early_stopping_patience=100,
     seed=42
 ):
     """
@@ -442,6 +447,8 @@ def train_graph_gan(
         lambda_degree=lambda_degree,
         lambda_sparsity=lambda_sparsity,
         lambda_time_monotonic=lambda_time_monotonic,
+        lambda_start=lambda_start,
+        lambda_end=lambda_end,
         temp_start=temp_start,
         temp_min=temp_min,
         temp_decay=temp_decay
@@ -458,6 +465,9 @@ def train_graph_gan(
     print(f'    Dropout: {discriminator_dropout}')
 
     print(f'  Training parameters:')
+    print(f'    batch size: {batch_size}')
+    print(f'    epochs: {epochs}')
+    print(f'    validation split: {validation_split}')
     print(f'    n_critic: {n_critic}')
     print(f'    lambda_gp: {lambda_gp}')
     print(f'    lambda_constraint: {lambda_constraint}')
@@ -468,9 +478,9 @@ def train_graph_gan(
     print('\n Compiling model...')
 
     d_optimizer = keras.optimizers.Adam(
-        learning_rate=d_lr, beta_1=beta_1, beta_2=beta_2)
+        learning_rate=d_lr, beta_1=beta_1, beta_2=beta_2, clipnorm=1.0)
     g_optimizer = keras.optimizers.Adam(
-        learning_rate=g_lr, beta_1=beta_1, beta_2=beta_2)
+        learning_rate=g_lr, beta_1=beta_1, beta_2=beta_2, clipnorm=1.0)
 
     gan.compile(d_optimizer=d_optimizer, g_optimizer=g_optimizer)
 
@@ -486,9 +496,11 @@ def train_graph_gan(
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     checkpoint_dir = os.path.join(output_dir, 'checkpoints', timestamp)
     log_dir = os.path.join(output_dir, 'logs', timestamp)
+    samples_dir = os.path.join(output_dir, 'samples', timestamp)
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(samples_dir, exist_ok=True)
 
     callbacks = create_callbacks(
         checkpoint_dir=checkpoint_dir,
@@ -500,7 +512,7 @@ def train_graph_gan(
 
     # Add sample graphs callback
     sample_callback = SampleGraphsCallback(
-        output_dir=output_dir, 
+        output_dir=samples_dir, 
         idx_to_activity=vocab['idx_to_activity']
     )
     callbacks.append(sample_callback)
@@ -625,11 +637,17 @@ if __name__ == '__main__':
                         help='Sparsity loss weight')
     parser.add_argument('--lambda-time-monotonic', type=float, default=10.0,
                         help='Monotonic time loss weight')
+    parser.add_argument('--lambda-start', type=float, default=5.0,
+                        help='Start constraint weight')
+    parser.add_argument('--lambda-end', type=float, default=5.0,
+                        help='End constraint weight')
+    parser.add_argument('--temp-decay', type=float, default=0.9995,
+                        help='Temperature decay factor')
 
     # Optimizer
-    parser.add_argument('--d-lr', type=float, default=0.0002,
+    parser.add_argument('--d-lr', type=float, default=0.0001,
                         help='Discriminator learning rate')
-    parser.add_argument('--g-lr', type=float, default=0.0001,
+    parser.add_argument('--g-lr', type=float, default=0.00005,
                         help='Generator learning rate')
 
     # Other
@@ -657,5 +675,8 @@ if __name__ == '__main__':
         seed=args.seed,
         min_graph_size=5,
         max_graph_size=args.max_nodes,
-        lambda_time_monotonic=args.lambda_time_monotonic
+        lambda_time_monotonic=args.lambda_time_monotonic,
+        lambda_start=args.lambda_start,
+        lambda_end=args.lambda_end,
+        temp_decay=args.temp_decay
     )

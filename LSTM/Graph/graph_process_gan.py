@@ -57,7 +57,7 @@ class GraphProcessGAN(keras.Model):
                  # Temperature scheduling
                  temp_start=5.0,
                  temp_min=0.5,
-                 temp_decay=0.99995,
+                 temp_decay=0.9995,
                  name='graph_process_gan'):
         """
         Args:
@@ -81,8 +81,8 @@ class GraphProcessGAN(keras.Model):
             lambda_connectivity: UNIFIED connectivity weight (general + START/END + edge continuity)
             lambda_structure: Structural validity weight (no self-loops)
             lambda_degree: Degree constraint weight (soft in/out rules)
-            lambda_path: Path existence weight (START→END reachability)
-            lambda_node_on_path: Nodes on path weight (all nodes must be on START→END paths)
+            lambda_path: Path existence weight (START->END reachability)
+            lambda_node_on_path: Nodes on path weight (all nodes must be on START->END paths)
             lambda_sparsity: Sparsity weight (encourage varying node counts)
             lambda_time_monotonic: Monotonic time weight (trace_time must increase)
             temp_start: Initial Gumbel-Softmax temperature
@@ -104,15 +104,7 @@ class GraphProcessGAN(keras.Model):
         self.temp_min = temp_min
         self.temp_decay = temp_decay
 
-        # Build generator (no num_edge_types)
-        # self.generator = GraphGenerator(
-        #     max_nodes=max_nodes,
-        #     num_activities=num_activities,
-        #     noise_dim=noise_dim,
-        #     hidden_dims=generator_hidden_dims,
-        #     dropout_rate=generator_dropout
-        # )
-        
+        # Build generator
         self.generator = GraphGeneratorWithFeatures(
             max_nodes=max_nodes,
             num_activities=num_activities,
@@ -122,24 +114,17 @@ class GraphProcessGAN(keras.Model):
             dropout_rate=generator_dropout
         )
 
-        # Build discriminator (no num_edge_types)
-        # self.discriminator = GraphDiscriminator(
-        #     num_activities=num_activities,
-        #     rgcn_hidden_dims=rgcn_hidden_dims,
-        #     mlp_hidden_dims=mlp_hidden_dims,
-        #     dropout_rate=discriminator_dropout
-        # )
-        
+        # Build discriminator
         self.discriminator = GraphDiscriminatorWithFeatures(
             num_activities=num_activities,
             num_features=3,
             rgcn_hidden_dims=rgcn_hidden_dims,
             mlp_hidden_dims=mlp_hidden_dims,
-            dropout_rate=discriminator_dropout
+            dropout_rate=discriminator_dropout,
+            pooling_method='sum'
         )
-        
 
-        # Constraints (simplified after merging)
+        # Constraints
         self.constraints = GraphProcessConstraints(
             start_idx=start_idx,
             end_idx=end_idx,
@@ -269,6 +254,15 @@ class GraphProcessGAN(keras.Model):
             # Process constraints
             constraint_loss = self.constraints.total_constraint_loss(
                 fake_adj, fake_nodes, fake_features)
+            
+            # Debug: Get individual losses
+            # Use tf.print for graph mode compatibility
+            # individual_losses = self.constraints.get_individual_losses(
+            #     fake_adj, fake_nodes, fake_features)
+            # tf.print("\n--- Constraint Losses ---")
+            # for k, v in individual_losses.items():
+            #     tf.print(k, ":", v)
+            # tf.print("-------------------------")
             
 
             # Total generator loss

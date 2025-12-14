@@ -13,7 +13,6 @@ from tensorflow import keras
 from tensorflow.keras import layers
 import numpy as np
 from rgcn_layers import RGCNStack
-from rgcn_layers import RGCNStack
 from graph_utils import global_mean_pool, global_sum_pool
 
 

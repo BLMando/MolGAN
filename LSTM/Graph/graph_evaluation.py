@@ -1,0 +1,386 @@
+"""
+Graph Evaluation Module
+
+Main evaluation entry point for comparing generated and real instance graphs
+using the metrics from ig_metrics.py:
+- Accuracy (Acc): Count of exactly matching graphs
+- Matching Cost (MC): Graph Edit Distance
+- Average Generalization (AG): Number of occurrence sequences
+
+Usage:
+    from LSTM.Graph import graph_evaluation as eval
+    
+    results = eval.evaluate_generated_graphs(
+        pred_adj=generated_adj,
+        pred_nodes=generated_nodes,
+        true_traces=real_traces,
+        idx_to_activity=idx_to_activity
+    )
+"""
+
+import os
+import numpy as np
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple
+from glob import glob
+
+# Local imports
+from ig_metrics import evaluate_instance_graphs
+from graph_conversion import (
+    batch_matrices_to_networkx,
+    traces_to_networkx,
+    txt_files_to_networkx
+)
+
+
+def evaluate_generated_graphs(
+    pred_adj: np.ndarray,
+    pred_nodes: np.ndarray,
+    idx_to_activity: Dict[int, str],
+    true_traces: Optional[List[Dict]] = None,
+    pad_activity: str = 'PAD',
+    compute_ag: bool = True,
+    ag_max_count: int = 10000,
+    mc_timeout: float = 5.0,
+    verbose: bool = True
+) -> dict:
+    """
+    Evaluate generated graphs using Instance Graph metrics.
+    
+    Args:
+        pred_adj: Generated adjacency matrices
+                 Shape: (batch, max_nodes, max_nodes) or 
+                        (batch, max_nodes, max_nodes, num_edge_types)
+        pred_nodes: Generated node matrices
+                   Shape: (batch, max_nodes, num_activities)
+        idx_to_activity: Mapping from activity index to activity name
+        true_traces: Optional list of real traces from ig_loader
+                    If provided, computes Accuracy and Matching Cost
+        pad_activity: Name of PAD activity to filter out
+        compute_ag: Whether to compute Average Generalization
+        ag_max_count: Maximum count for AG computation per graph
+        mc_timeout: Timeout in seconds for Matching Cost computation per pair
+        verbose: Whether to print progress
+    
+    Returns:
+        Dictionary with evaluation results:
+        {
+            'num_predicted': int,
+            'num_true': int (if true_traces provided),
+            'accuracy': {'count': int, 'percentage': float},
+            'matching_cost': {'mean': float, 'median': float, ...},
+            'avg_generalization': {'mean': float, ...}
+        }
+    """
+    if verbose:
+        print("=" * 60)
+        print("INSTANCE GRAPH EVALUATION")
+        print("=" * 60)
+    
+    # Convert generated matrices to NetworkX graphs
+    if verbose:
+        print(f"\nConverting {len(pred_adj)} generated graphs to NetworkX format...")
+    
+    pred_graphs = batch_matrices_to_networkx(
+        adj_matrices=pred_adj,
+        node_matrices=pred_nodes,
+        idx_to_activity=idx_to_activity,
+        pad_activity=pad_activity
+    )
+    
+    if verbose:
+        # Print some statistics about converted graphs
+        node_counts = [len(g.nodes()) for g in pred_graphs]
+        edge_counts = [len(g.edges()) for g in pred_graphs]
+        print(f"  Avg nodes: {np.mean(node_counts):.1f} (min={min(node_counts)}, max={max(node_counts)})")
+        print(f"  Avg edges: {np.mean(edge_counts):.1f} (min={min(edge_counts)}, max={max(edge_counts)})")
+    
+    # Convert real traces if provided
+    true_graphs = None
+    if true_traces is not None:
+        if verbose:
+            print(f"\nConverting {len(true_traces)} real traces to NetworkX format...")
+        true_graphs = traces_to_networkx(true_traces)
+        
+        if verbose:
+            node_counts = [len(g.nodes()) for g in true_graphs]
+            edge_counts = [len(g.edges()) for g in true_graphs]
+            print(f"  Avg nodes: {np.mean(node_counts):.1f} (min={min(node_counts)}, max={max(node_counts)})")
+            print(f"  Avg edges: {np.mean(edge_counts):.1f} (min={min(edge_counts)}, max={max(edge_counts)})")
+    
+    # Run evaluation
+    if verbose:
+        print("\n" + "-" * 40)
+        print("Running IG Metrics Evaluation...")
+        print("-" * 40)
+    
+    results = evaluate_instance_graphs(
+        pred_graphs=pred_graphs,
+        true_graphs=true_graphs,
+        compute_ag=compute_ag,
+        ag_max_count=ag_max_count,
+        mc_timeout=mc_timeout
+    )
+    
+    if verbose:
+        print("\n" + "=" * 60)
+        print("EVALUATION COMPLETE")
+        print("=" * 60)
+    
+    return results
+
+
+def evaluate_from_txt_files(
+    generated_dir: str,
+    true_traces: Optional[List[Dict]] = None,
+    pattern: str = '*.txt',
+    compute_ag: bool = True,
+    ag_max_count: int = 10000,
+    mc_timeout: float = 5.0,
+    verbose: bool = True
+) -> dict:
+    """
+    Evaluate generated graphs from saved .txt files.
+    
+    Args:
+        generated_dir: Directory containing .txt graph files
+        true_traces: Optional list of real traces from ig_loader
+        pattern: Glob pattern for finding graph files
+        compute_ag: Whether to compute Average Generalization
+        ag_max_count: Maximum count for AG computation
+        mc_timeout: Timeout for MC computation per pair
+        verbose: Whether to print progress
+    
+    Returns:
+        Dictionary with evaluation results
+    """
+    if verbose:
+        print("=" * 60)
+        print("INSTANCE GRAPH EVALUATION (from files)")
+        print("=" * 60)
+    
+    # Find graph files
+    generated_path = Path(generated_dir)
+    txt_files = sorted(glob(str(generated_path / pattern)))
+    
+    if not txt_files:
+        raise FileNotFoundError(f"No {pattern} files found in {generated_dir}")
+    
+    if verbose:
+        print(f"\nFound {len(txt_files)} graph files in {generated_dir}")
+    
+    # Load generated graphs
+    if verbose:
+        print(f"Loading generated graphs...")
+    pred_graphs = txt_files_to_networkx(txt_files)
+    
+    if verbose:
+        node_counts = [len(g.nodes()) for g in pred_graphs]
+        edge_counts = [len(g.edges()) for g in pred_graphs]
+        print(f"  Loaded {len(pred_graphs)} graphs")
+        print(f"  Avg nodes: {np.mean(node_counts):.1f} (min={min(node_counts)}, max={max(node_counts)})")
+        print(f"  Avg edges: {np.mean(edge_counts):.1f} (min={min(edge_counts)}, max={max(edge_counts)})")
+    
+    # Convert real traces if provided
+    true_graphs = None
+    if true_traces is not None:
+        if verbose:
+            print(f"\nConverting {len(true_traces)} real traces to NetworkX format...")
+        true_graphs = traces_to_networkx(true_traces)
+    
+    # Run evaluation
+    if verbose:
+        print("\n" + "-" * 40)
+        print("Running IG Metrics Evaluation...")
+        print("-" * 40)
+    
+    results = evaluate_instance_graphs(
+        pred_graphs=pred_graphs,
+        true_graphs=true_graphs,
+        compute_ag=compute_ag,
+        ag_max_count=ag_max_count,
+        mc_timeout=mc_timeout
+    )
+    
+    if verbose:
+        print("\n" + "=" * 60)
+        print("EVALUATION COMPLETE")
+        print("=" * 60)
+    
+    return results
+
+
+def print_evaluation_results(results: dict):
+    """
+    Pretty-print evaluation results.
+    
+    Args:
+        results: Dictionary from evaluate_generated_graphs or evaluate_from_txt_files
+    """
+    print("\n" + "=" * 50)
+    print("INSTANCE GRAPH METRICS SUMMARY")
+    print("=" * 50)
+    
+    print(f"\nDataset: {results.get('num_predicted', 'N/A')} predicted graphs")
+    if 'num_true' in results:
+        print(f"         {results['num_true']} ground truth graphs")
+    
+    # Accuracy
+    if 'accuracy' in results:
+        acc = results['accuracy']
+        print(f"\n📊 ACCURACY:")
+        print(f"   Correct matches: {acc['count']}")
+        print(f"   Percentage: {acc['percentage']:.2f}%")
+    
+    # Matching Cost
+    if 'matching_cost' in results:
+        mc = results['matching_cost']
+        print(f"\n📏 MATCHING COST (Graph Edit Distance):")
+        print(f"   Mean: {mc['mean']:.2f}")
+        print(f"   Median: {mc['median']:.2f}")
+        print(f"   Std: {mc['std']:.2f}")
+        print(f"   Computed: {mc['computed']}, Failed: {mc['failed']}")
+    
+    # Average Generalization
+    if 'avg_generalization' in results:
+        ag = results['avg_generalization']
+        print(f"\n🔄 AVERAGE GENERALIZATION:")
+        print(f"   DAGs: {ag['num_dags']}, Cyclic: {ag['num_cyclic']}")
+        if ag['num_dags'] > 0:
+            print(f"   Mean (DAGs only): {ag['dag_mean']:.2f}")
+            print(f"   Median (DAGs only): {ag['dag_median']:.2f}")
+            print(f"   Min/Max: {ag['min']}/{ag['max']}")
+            print(f"   Tailored (AG=1): {ag['ag_1']}")
+            print(f"   Capped (AG≥max): {ag['ag_capped']}")
+    
+    print("\n" + "=" * 50)
+
+
+# ============================================================================
+# TESTING
+# ============================================================================
+
+if __name__ == '__main__':
+    print("Testing Graph Evaluation Module...")
+    print("=" * 60)
+    
+    # Create sample data
+    import numpy as np
+    
+    # Sample vocabulary
+    idx_to_activity = {0: 'PAD', 1: 'START', 2: 'A', 3: 'B', 4: 'END'}
+    
+    # Create sample generated graphs (batch of 3)
+    batch_size = 3
+    max_nodes = 6
+    num_activities = 5
+    
+    # Graph 1: START -> A -> END
+    adj1 = np.zeros((max_nodes, max_nodes))
+    nodes1 = np.zeros((max_nodes, num_activities))
+    nodes1[0, 1] = 1.0  # START
+    nodes1[1, 2] = 1.0  # A
+    nodes1[2, 4] = 1.0  # END
+    adj1[0, 1] = 1.0
+    adj1[1, 2] = 1.0
+    
+    # Graph 2: START -> A -> B -> END
+    adj2 = np.zeros((max_nodes, max_nodes))
+    nodes2 = np.zeros((max_nodes, num_activities))
+    nodes2[0, 1] = 1.0  # START
+    nodes2[1, 2] = 1.0  # A
+    nodes2[2, 3] = 1.0  # B
+    nodes2[3, 4] = 1.0  # END
+    adj2[0, 1] = 1.0
+    adj2[1, 2] = 1.0
+    adj2[2, 3] = 1.0
+    
+    # Graph 3: Fork-join START -> {A, B} -> END
+    adj3 = np.zeros((max_nodes, max_nodes))
+    nodes3 = np.zeros((max_nodes, num_activities))
+    nodes3[0, 1] = 1.0  # START
+    nodes3[1, 2] = 1.0  # A
+    nodes3[2, 3] = 1.0  # B
+    nodes3[3, 4] = 1.0  # END
+    adj3[0, 1] = 1.0  # START -> A
+    adj3[0, 2] = 1.0  # START -> B
+    adj3[1, 3] = 1.0  # A -> END
+    adj3[2, 3] = 1.0  # B -> END
+    
+    # Stack into batch
+    pred_adj = np.stack([adj1, adj2, adj3])
+    pred_nodes = np.stack([nodes1, nodes2, nodes3])
+    
+    # Create sample real traces
+    true_traces = [
+        {  # Same as Graph 1
+            'case_id': 1,
+            'vertices': [
+                {'node_id': 0, 'activity': 'START'},
+                {'node_id': 1, 'activity': 'A'},
+                {'node_id': 2, 'activity': 'END'}
+            ],
+            'edges': [
+                {'source': 0, 'target': 1},
+                {'source': 1, 'target': 2}
+            ]
+        },
+        {  # Same as Graph 2
+            'case_id': 2,
+            'vertices': [
+                {'node_id': 0, 'activity': 'START'},
+                {'node_id': 1, 'activity': 'A'},
+                {'node_id': 2, 'activity': 'B'},
+                {'node_id': 3, 'activity': 'END'}
+            ],
+            'edges': [
+                {'source': 0, 'target': 1},
+                {'source': 1, 'target': 2},
+                {'source': 2, 'target': 3}
+            ]
+        },
+        {  # Different: START -> B -> END
+            'case_id': 3,
+            'vertices': [
+                {'node_id': 0, 'activity': 'START'},
+                {'node_id': 1, 'activity': 'B'},
+                {'node_id': 2, 'activity': 'END'}
+            ],
+            'edges': [
+                {'source': 0, 'target': 1},
+                {'source': 1, 'target': 2}
+            ]
+        }
+    ]
+    
+    print("\nTest: Evaluation with generated matrices and real traces")
+    print("-" * 60)
+    
+    results = evaluate_generated_graphs(
+        pred_adj=pred_adj,
+        pred_nodes=pred_nodes,
+        idx_to_activity=idx_to_activity,
+        true_traces=true_traces,
+        compute_ag=True,
+        mc_timeout=5.0,
+        verbose=True
+    )
+    
+    print("\n" + "-" * 60)
+    print("Results Summary:")
+    print_evaluation_results(results)
+    
+    # Validate results
+    print("\nValidation:")
+    assert 'accuracy' in results, "Missing accuracy in results"
+    assert 'matching_cost' in results, "Missing matching_cost in results"
+    assert 'avg_generalization' in results, "Missing avg_generalization in results"
+    
+    print("  ✓ All expected metrics present")
+    print("  ✓ Accuracy count:", results['accuracy']['count'])
+    print("  ✓ MC mean:", results['matching_cost']['mean'])
+    print("  ✓ AG mean:", results['avg_generalization']['mean'])
+    
+    print("\n" + "=" * 60)
+    print("✓ All evaluation tests passed!")
+    print("=" * 60)

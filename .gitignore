@@ -103,15 +103,11 @@ venv.bak/
 # mypy
 .mypy_cache/
 
-checkpoints/
-backup/
-output/
-
 # Dataset files
 data/gdb9.sdf
 data/*.pkl.gz
-output/
-output_keras/
+
 output_graph_gan/
 docs/
 MOLGAN/
+*.md

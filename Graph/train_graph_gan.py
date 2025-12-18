@@ -245,7 +245,7 @@ def create_callbacks(
 
 def train_graph_gan(
     data_path,
-    output_dir='../../output_graph_gan',
+    output_dir='../output_graph_gan',
     # Model hyperparameters
     max_nodes=20,
     noise_dim=128,
@@ -606,10 +606,10 @@ if __name__ == '__main__':
 
     # Data
     parser.add_argument('--data', type=str,
-                        default='../../data/Helpdesk_igs_complete.g',
+                        default='../data/Helpdesk_igs_complete.g',
                         help='Path to .g file')
     parser.add_argument('--output', type=str,
-                        default='../../output_graph_gan',
+                        default='../output_graph_gan',
                         help='Output directory')
 
     # Model architecture

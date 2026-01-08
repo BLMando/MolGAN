@@ -1,10 +1,3 @@
-"""
-Graph Convolutional Network (GCN) Layers
-
-Standard GCN for binary graphs (no edge types).
-Simplified version without relational processing.
-"""
-
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -12,17 +5,7 @@ from tensorflow.keras import layers
 
 class RGCNLayer(keras.layers.Layer):
     """
-    Single GCN layer for binary graphs (no edge types)
-
-    Formula:
-        h_i^(l+1) = σ((1/c_i) * Σ_{j∈N_i} W * h_j^(l) + W_0 * h_i^(l))
-
-    where:
-        - h_i^(l): node i features at layer l
-        - N_i: neighbors of node i
-        - c_i: normalization constant (in-degree)
-        - W: weight matrix
-        - W_0: self-loop weight matrix
+    Single GCN layer for binary graphs
     """
 
     def __init__(self,
@@ -47,14 +30,11 @@ class RGCNLayer(keras.layers.Layer):
         self.dropout_rate = dropout_rate
         self.use_layer_norm = use_layer_norm
 
-        # Create weight matrices for each edge type
         self.edge_weight = layers.Dense(output_dim, use_bias=False, name='edge_transform')
-
-        # Self-loop weight
+        
         self.self_weight = layers.Dense(
             output_dim, use_bias=False, name='self_loop')
 
-        # Bias (shared across all relations)
         if use_bias:
             self.bias = self.add_weight(
                 name='bias',
@@ -63,11 +43,9 @@ class RGCNLayer(keras.layers.Layer):
                 trainable=True
             )
 
-        # Dropout
         if dropout_rate > 0:
             self.dropout = layers.Dropout(dropout_rate)
 
-        # Layer normalization
         if use_layer_norm:
             self.layer_norm = layers.LayerNormalization()
 
@@ -83,43 +61,32 @@ class RGCNLayer(keras.layers.Layer):
         Returns:
             Updated node features (batch, num_nodes, output_dim)
         """
+
         batch_size = tf.shape(node_features)[0]
         num_nodes = tf.shape(node_features)[1]
 
-        # Message passing for each edge type
-        # Single message passing (no edge types)
-        # adjacency is now (batch, nodes, nodes) - binary
-
-        # Transform features
         transformed = self.edge_weight(node_features)  # (batch, nodes, output_dim)
 
-        # Aggregate messages via matrix multiplication
         message = tf.matmul(adjacency, transformed)  # (batch, nodes, output_dim)
 
         # Normalization: divide by in-degree
         in_degree = tf.reduce_sum(adjacency, axis=1)  # (batch, nodes)
-        in_degree = tf.maximum(in_degree, 1.0)  # Avoid division by zero
+        in_degree = tf.maximum(in_degree, 1.0)
         in_degree = tf.expand_dims(in_degree, axis=-1)  # (batch, nodes, 1)
         aggregated_messages = message / in_degree
 
-        # Self-loop (update with node's own features)
         self_message = self.self_weight(node_features)
 
-        # Combine aggregated messages and self-loop
         output = aggregated_messages + self_message
 
-        # Add bias
         if self.use_bias:
             output = output + self.bias
 
-        # Apply activation
         output = self.activation_fn(output)
 
-        # Layer normalization
         if self.use_layer_norm:
             output = self.layer_norm(output)
 
-        # Dropout
         if self.dropout_rate > 0:
             output = self.dropout(output, training=training)
 
@@ -147,7 +114,6 @@ class RGCNStack(keras.Model):
 
         self.hidden_dims = hidden_dims
 
-        # Create R-GCN layers
         self.rgcn_layers = []
         for i, dim in enumerate(hidden_dims):
             layer = RGCNLayer(

@@ -38,14 +38,12 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename, featur
         f.write("# Nodes: node_id: activity\n")
         f.write("# Edges: Edge source target\n\n")
         
-        # Write nodes (only non-zero activity nodes)
         for node_id in range(max_nodes):
             activity_probs = node_matrix[node_id]
             if np.sum(activity_probs) > 0:  # Node exists
                 activity_idx = np.argmax(activity_probs)
                 activity = idx_to_activity.get(activity_idx, f"UNK_{activity_idx}")
                 
-                # Skip PAD nodes
                 if activity == '<PAD>':
                     continue
                     
@@ -53,31 +51,27 @@ def save_graph_to_txt(adj_matrix, node_matrix, idx_to_activity, filename, featur
         
         f.write("\n")
         
-        # Write edges (support both binary adjacency and multi-channel)
         for source in range(max_nodes):
             for target in range(max_nodes):
-                # Support 2D binary adjacency or 3D multi-channel adjacency
                 if adj_matrix.ndim == 2:
                     has_edge = adj_matrix[source, target] > 0.5
                 elif adj_matrix.ndim == 3:
                     has_edge = np.sum(adj_matrix[source, target, :]) > 0.5
                 else:
-                    # Fallback: treat any non-zero as edge
                     has_edge = np.any(adj_matrix[source, target] > 0)
 
                 if has_edge:
                     f.write(f"Edge {source} {target}\n")
 
-        # Write temporal features if provided
         if feature_matrix is not None:
             f.write("\n# Temporal Features: node_id: norm_time trace_time prev_event_time\n")
             for node_id in range(max_nodes):
-                # Only write features for existing nodes (non-zero activity)
                 if np.sum(node_matrix[node_id]) > 0:
                     feats = feature_matrix[node_id]
                     f.write(f"Features {node_id}: {feats[0]:.4f} {feats[1]:.4f} {feats[2]:.4f}\n")
 
-# Add parent directory to path
+
+
 sys.path.append(str(Path(__file__).parent))
 
 
@@ -173,7 +167,6 @@ def create_callbacks(
         monitor=monitor,
         mode='min',
         save_best_only=True,
-        # Save weights (not full model - GAN structure is complex)
         save_weights_only=True,
         verbose=1
     )
@@ -198,10 +191,10 @@ def create_callbacks(
 
     tensorboard_callback = keras.callbacks.TensorBoard(
         log_dir=log_dir,
-        histogram_freq=0,  # Don't log histograms (too slow for GANs)
-        write_graph=False,  # Don't log graph (too large)
+        histogram_freq=0,
+        write_graph=False,
         update_freq='epoch',
-        profile_batch=0  # Disable profiling
+        profile_batch=0
     )
     callbacks.append(tensorboard_callback)
 
@@ -234,9 +227,8 @@ def create_callbacks(
 
     backup_restore = keras.callbacks.BackupAndRestore(
         backup_dir=backup_dir,
-        # Save every epoch (can also use integer for batch frequency)
         save_freq='epoch',
-        delete_checkpoint=False  # Keep backup for manual recovery
+        delete_checkpoint=False
     )
     callbacks.append(backup_restore)
 
@@ -318,7 +310,7 @@ def train_graph_gan(
         early_stopping_patience: Patience for early stopping
         seed: Random seed
     """
-    # Set seeds
+   
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
@@ -333,7 +325,6 @@ def train_graph_gan(
 
     data = load_ig_for_gan(data_path, max_trace_nodes=max_nodes)
 
-    # Extract all graphs (train + val + test)
     graphs = data['traces_train'] + data['traces_val'] + data['traces_test']
 
     vocab = {
@@ -371,18 +362,14 @@ def train_graph_gan(
         max_graph_size=max_graph_size
     )
 
-    # Get matrices
     adjacency_matrices = np.array(dataset.adjacency_matrices)
     node_matrices = np.array(dataset.node_matrices)
     feature_matrices = np.array(dataset.feature_matrices)
-    #num_edge_types = dataset.num_edge_types  # Not needed anymore (binary adjacency)
 
     print(f'  Adjacency shape: {adjacency_matrices.shape}')
     print(f'  Nodes shape: {node_matrices.shape}')
     print(f'  Features shape: {feature_matrices.shape}')
-    # print(f'  Edge types: {num_edge_types}')  # No longer applicable (binary)
-
-    # Compute activity frequencies for constraints
+  
     activity_counts = np.sum(node_matrices, axis=(0, 1))
     activity_frequencies = activity_counts / activity_counts.sum()
 
@@ -510,7 +497,6 @@ def train_graph_gan(
         patience=early_stopping_patience
     )
 
-    # Add sample graphs callback
     sample_callback = SampleGraphsCallback(
         output_dir=samples_dir, 
         idx_to_activity=vocab['idx_to_activity']
@@ -547,10 +533,8 @@ def train_graph_gan(
     os.makedirs(final_path, exist_ok=True)
     gan.save_weights(os.path.join(final_path, 'model'))
 
-    # Save metadata
     metadata = {
         'num_activities': num_activities,
-        # 'num_edge_types': num_edge_types,  # Not applicable (binary adjacency)
         'max_nodes': max_nodes,
         'vocab': vocab,
         'activity_frequencies': activity_frequencies.tolist(),
@@ -583,7 +567,6 @@ def train_graph_gan(
     print(f'  Sample nodes shape: {sample_nodes.shape}')
     print(f'  Sample features shape: {sample_features.shape}')
 
-    # Save samples
     np.save(os.path.join(final_path, 'sample_adjacency.npy'), sample_adj)
     np.save(os.path.join(final_path, 'sample_nodes.npy'), sample_nodes)
 

@@ -88,7 +88,6 @@ class GraphGenerator(keras.Model):
         """
         batch_size = tf.shape(z)[0]
 
-        # Process through dense layers
         h = z
         for layer in self.dense_layers:
             if isinstance(layer, layers.Dropout):
@@ -110,7 +109,7 @@ class GraphGenerator(keras.Model):
             (batch_size, self.max_nodes, self.num_activities)
         )
 
-        # Apply Gumbel-Softmax for nodes (still categorical)
+        # Apply Gumbel-Softmax for nodes
         nodes = gumbel_softmax(
             node_logits, temperature=temperature, hard=hard, axis=-1)
 
@@ -194,10 +193,8 @@ class GraphGeneratorWithFeatures(GraphGenerator):
         """
         batch_size = tf.shape(z)[0]
 
-        # Get base outputs
         adjacency, nodes = super().call(z, temperature, hard, training)
 
-        # Process through dense layers again for features
         h = z
         for layer in self.dense_layers:
             if isinstance(layer, layers.Dropout):

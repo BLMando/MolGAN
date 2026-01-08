@@ -1,10 +1,3 @@
-"""
-Graph Process GAN - Main GAN model with Keras API
-
-Combines generator and discriminator for graph-based process mining.
-Fully compatible with Keras .fit() API, callbacks, and metrics.
-"""
-
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
@@ -19,11 +12,6 @@ class GraphProcessGAN(keras.Model):
     """
     Main GAN model for process graph generation
 
-    Compatible with Keras API:
-    - Custom train_step and test_step
-    - Automatic metrics tracking
-    - Callback support (ModelCheckpoint, EarlyStopping, TensorBoard, etc.)
-    - Validation support
     """
 
     def __init__(self,
@@ -141,7 +129,7 @@ class GraphProcessGAN(keras.Model):
             lambda_time_monotonic=lambda_time_monotonic
         )
 
-        # Metrics (tracked automatically by Keras)
+        # Metrics
         self.d_loss_tracker = keras.metrics.Mean(name='d_loss')
         self.g_loss_tracker = keras.metrics.Mean(name='g_loss')
         self.gp_tracker = keras.metrics.Mean(name='gradient_penalty')
@@ -161,7 +149,6 @@ class GraphProcessGAN(keras.Model):
         """
         super().compile()
 
-        # Add gradient clipping
         d_optimizer.clipnorm = 1.0
         g_optimizer.clipnorm = 1.0
 
@@ -191,7 +178,7 @@ class GraphProcessGAN(keras.Model):
         Returns:
             Dictionary of metric values
         """
-        # Unpack data
+     
         if isinstance(real_data, tuple) and len(real_data) == 3:
             real_adj, real_nodes, real_features = real_data
         elif isinstance(real_data, tuple) and len(real_data) == 2:
@@ -219,14 +206,13 @@ class GraphProcessGAN(keras.Model):
                 fake_scores = self.discriminator(
                     fake_adj, fake_nodes, fake_features, training=True)
 
-                # Wasserstein loss
+               
                 d_loss = wasserstein_loss(real_scores, fake_scores)
 
-                # Gradient penalty
+                
                 gp = gradient_penalty_graph(self.discriminator, real_adj, real_nodes,
                                             fake_adj, fake_nodes, real_features, fake_features)
 
-                # Total discriminator loss
                 total_d_loss = d_loss + self.lambda_gp * gp
 
             # Update discriminator
@@ -248,24 +234,13 @@ class GraphProcessGAN(keras.Model):
             # Discriminator scores for fake data
             fake_scores = self.discriminator(
                 fake_adj, fake_nodes, fake_features, training=True)
-            # Generator loss (fool discriminator)
+        
             g_loss = -tf.reduce_mean(fake_scores)
 
-            # Process constraints
+            
             constraint_loss = self.constraints.total_constraint_loss(
                 fake_adj, fake_nodes, fake_features)
             
-            # Debug: Get individual losses
-            # Use tf.print for graph mode compatibility
-            # individual_losses = self.constraints.get_individual_losses(
-            #     fake_adj, fake_nodes, fake_features)
-            # tf.print("\n--- Constraint Losses ---")
-            # for k, v in individual_losses.items():
-            #     tf.print(k, ":", v)
-            # tf.print("-------------------------")
-            
-
-            # Total generator loss
             total_g_loss = g_loss + self.lambda_constraint * constraint_loss
 
         # Update generator
@@ -276,7 +251,7 @@ class GraphProcessGAN(keras.Model):
         )
 
         # ====================================================================
-        # UPDATE TEMPERATURE (anneal for more discrete outputs)
+        # UPDATE TEMPERATURE
         # ====================================================================
         new_temp = tf.maximum(
             self.temperature * self.temp_decay, self.temp_min)
@@ -293,7 +268,6 @@ class GraphProcessGAN(keras.Model):
         self.d_fake_score_tracker.update_state(tf.reduce_mean(fake_scores))
         self.temperature_tracker.update_state(self.temperature)
 
-        # Return metrics (displayed in progress bar)
         return {m.name: m.result() for m in self.metrics}
 
     def test_step(self, real_data):
@@ -306,7 +280,7 @@ class GraphProcessGAN(keras.Model):
         Returns:
             Dictionary of metric values
         """
-        # Unpack data
+       
         if isinstance(real_data, tuple) and len(real_data) == 3:
             real_adj, real_nodes, real_features = real_data
         elif isinstance(real_data, tuple) and len(real_data) == 2:
@@ -327,14 +301,12 @@ class GraphProcessGAN(keras.Model):
         real_scores = self.discriminator(real_adj, real_nodes, real_features, training=False)
         fake_scores = self.discriminator(fake_adj, fake_nodes, fake_features, training=False)
 
-        # Compute losses (for validation metrics)
         d_loss = wasserstein_loss(real_scores, fake_scores)
         g_loss = -tf.reduce_mean(fake_scores)
-        # Process constraints
+        
         constraint_loss = self.constraints.total_constraint_loss(
             fake_adj, fake_nodes, fake_features)
 
-        # Update metrics
         self.d_loss_tracker.update_state(d_loss)
         self.g_loss_tracker.update_state(g_loss)
         self.constraint_loss_tracker.update_state(constraint_loss)

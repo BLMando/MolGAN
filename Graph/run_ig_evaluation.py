@@ -19,7 +19,6 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-# Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ig_loader import load_ig_for_gan
@@ -74,11 +73,9 @@ def main():
     print(f"\nLoading ground truth from: {args.data}")
     
     data = load_ig_for_gan(args.data)
-    # Use test traces for evaluation
     all_traces = data['traces_test']
     idx_to_activity = data['idx_to_activity']
     
-    # Filter traces by node count (to match fixed-length GAN outputs)
     if args.max_nodes is not None or args.min_nodes is not None:
         min_n = args.min_nodes if args.min_nodes is not None else 0
         max_n = args.max_nodes if args.max_nodes is not None else float('inf')
@@ -89,7 +86,6 @@ def main():
         print(f"Filtered traces by node count [{min_n}, {max_n}]: {len(all_traces)} -> {len(filtered_traces)}")
         all_traces = filtered_traces
     
-    # Limit real traces if specified
     if args.num_real is not None:
         all_traces = all_traces[:args.num_real]
     
@@ -100,7 +96,6 @@ def main():
     # ==================================================================
         
     if args.generated_dir:
-        # Evaluate from saved .txt files
         print(f"\nLoading generated graphs from: {args.generated_dir}")
         
         compute_ag = args.compute_ag and not args.no_ag
@@ -120,9 +115,7 @@ def main():
     if not args.quiet:
         print_evaluation_results(results)
     
-    # Save to JSON if requested
     if args.output:
-        # Convert numpy types for JSON serialization
         def convert_for_json(obj):
             if isinstance(obj, np.ndarray):
                 return obj.tolist()
@@ -147,7 +140,6 @@ def main():
             json.dump(results_json, f, indent=2)
         print(f"\nResults saved to: {args.output}")
     
-    # Print summary line for scripts
     if 'accuracy' in results:
         acc = results['accuracy']['percentage']
         mc = results['matching_cost']['mean'] if 'matching_cost' in results else 'N/A'

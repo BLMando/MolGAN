@@ -4,7 +4,6 @@ Instance Graph Loader - Parse .g files
 Parses the Helpdesk instance graph format with:
 - Vertices (v lines): nodes with activities, timestamps, features
 - Edges (e lines): connections between nodes with labels
-- Automatic parallelism detection from edge structure
 """
 
 import numpy as np
@@ -54,17 +53,13 @@ class InstanceGraphLoader:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
 
-                # Skip empty lines and header
                 if not line or line.startswith('e_v node1'):
                     continue
 
-                # New trace separator
                 if line == 'XP':
-                    # Save previous trace
                     if current_trace is not None and current_trace['vertices']:
                         traces.append(current_trace)
 
-                    # Start new trace
                     current_trace = {
                         'vertices': [],
                         'edges': [],
@@ -76,22 +71,19 @@ class InstanceGraphLoader:
                 if not in_trace:
                     continue
 
-                # Parse vertex line
+               
                 if line.startswith('v '):
                     vertex = self._parse_vertex_line(line, line_num)
                     if vertex:
-                        current_trace['vertices'].append(vertex)
-                        # Set case_id from first vertex
+                        current_trace['vertices'].append(vertex)              
                         if current_trace['case_id'] is None:
                             current_trace['case_id'] = vertex['case_id']
 
-                # Parse edge line
                 elif line.startswith('e '):
                     edge = self._parse_edge_line(line, line_num)
                     if edge:
                         current_trace['edges'].append(edge)
 
-        # Don't forget last trace
         if current_trace is not None and current_trace['vertices']:
             traces.append(current_trace)
 
@@ -108,12 +100,8 @@ class InstanceGraphLoader:
         v 1.0  START "2012-04-03 14:55:37+00:00" "2012-04-03 14:55:37+00:00" 2.0 0.271606374316622 0.0 0.0
         """
         try:
-            # Handle quoted fields properly
             import re
-            # Match quoted strings or non-whitespace sequences
             parts = re.findall(r'"[^"]*"|\S+', line)
-
-            # Remove 'v' prefix
             parts = parts[1:]
 
             vertex = {
@@ -168,23 +156,17 @@ class InstanceGraphLoader:
         if self.verbose:
             log('Building vocabularies...')
 
-        # Collect unique activities
         activities = set()
         for trace in traces:
             for vertex in trace['vertices']:
                 activities.add(vertex['activity'])
-
-        # Sort for consistency
         activities = sorted(list(activities))
 
-        # Add PAD token
         activities = ['<PAD>'] + activities
 
-        # Create mappings
         self.activity_to_idx = {act: idx for idx, act in enumerate(activities)}
         self.idx_to_activity = {idx: act for idx, act in enumerate(activities)}
 
-        # Collect unique edge labels
         edge_labels = set()
         for trace in traces:
             for edge in trace['edges']:
@@ -270,13 +252,10 @@ def load_ig_for_gan(filepath: str,
     """
     loader = InstanceGraphLoader(verbose=verbose)
 
-    # Load traces
     traces = loader.load_file(filepath)
 
-    # Build vocabularies
     loader.build_vocabularies(traces)
 
-    # Filter by length
     filtered_traces = []
     for trace in traces:
         num_nodes = len(trace['vertices'])
@@ -287,12 +266,10 @@ def load_ig_for_gan(filepath: str,
         log(f'Filtered to {len(filtered_traces)}/{len(traces)} traces '
             f'(nodes between {min_trace_nodes} and {max_trace_nodes})')
 
-    # Split train/val/test
     n_total = len(filtered_traces)
     n_train = int(n_total * train_ratio)
     n_val = int(n_total * val_ratio)
 
-    # Shuffle
     np.random.seed(42)
     indices = np.random.permutation(n_total)
 
@@ -303,11 +280,9 @@ def load_ig_for_gan(filepath: str,
     if verbose:
         log(f'Split: train={len(traces_train)}, val={len(traces_val)}, test={len(traces_test)}')
 
-    # Print statistics
     if verbose:
         loader.print_statistics(filtered_traces)
 
-    # Determine max nodes
     max_nodes = max(len(trace['vertices']) for trace in filtered_traces)
 
     return {

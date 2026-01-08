@@ -88,10 +88,9 @@ class GraphDiscriminator(keras.Model):
         Returns:
             scores: Discriminator scores (batch, 1) for WGAN
         """
-        # Process through R-GCN
+       
         node_features = self.rgcn(nodes, adjacency, training=training)
         
-        # Global pooling to get graph-level representation
         if self.pooling_method == 'mean':
             graph_features = global_mean_pool(node_features)
         elif self.pooling_method == 'sum':
@@ -101,12 +100,10 @@ class GraphDiscriminator(keras.Model):
         else:
             raise ValueError(f'Unknown pooling method: {self.pooling_method}')
         
-        # Pass through MLP classifier
         h = graph_features
         for layer in self.classifier_layers:
             h = layer(h, training=training) if isinstance(layer, layers.Dropout) else layer(h)
         
-        # Output score
         scores = self.output_layer(h)
         
         return scores
@@ -170,16 +167,14 @@ class GraphDiscriminatorWithFeatures(GraphDiscriminator):
         Returns:
             scores: Discriminator scores
         """
-        # Process through R-GCN
+      
         node_features = self.rgcn(nodes, adjacency, training=training)
         
-        # If features provided, concatenate and project them
         if features is not None:
             processed_features = self.feature_processor(features)
             node_features = tf.concat([node_features, processed_features], axis=-1)
             node_features = self.feature_projection(node_features)
         
-        # Global pooling
         if self.pooling_method == 'mean':
             graph_features = global_mean_pool(node_features)
         elif self.pooling_method == 'sum':
@@ -187,7 +182,6 @@ class GraphDiscriminatorWithFeatures(GraphDiscriminator):
         else:
             graph_features = tf.reduce_max(node_features, axis=1)
         
-        # Classify
         h = graph_features
         for layer in self.classifier_layers:
             h = layer(h, training=training) if isinstance(layer, layers.Dropout) else layer(h)

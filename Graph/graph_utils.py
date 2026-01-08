@@ -25,24 +25,20 @@ def gumbel_softmax(logits, temperature=1.0, hard=False, axis=-1):
     Returns:
         Sampled tensor (differentiable)
     """
-    # Sample from Gumbel(0, 1)
+ 
     uniform_samples = tf.random.uniform(tf.shape(logits), minval=0, maxval=1)
     gumbel_noise = -tf.math.log(-tf.math.log(uniform_samples + 1e-20) + 1e-20)
 
-    # Add Gumbel noise to logits
     noisy_logits = logits + gumbel_noise
 
-    # Apply softmax with temperature
     y_soft = tf.nn.softmax(noisy_logits / temperature, axis=axis)
 
     if hard:
-        # Straight-through estimator: forward pass uses one-hot, backward uses soft
         y_hard = tf.one_hot(
             tf.argmax(noisy_logits, axis=axis),
             depth=tf.shape(logits)[axis],
             dtype=logits.dtype
         )
-        # Stop gradient on difference
         y = tf.stop_gradient(y_hard - y_soft) + y_soft
     else:
         y = y_soft
@@ -83,11 +79,9 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
     """
     batch_size = tf.shape(real_adj)[0]
 
-    # Random interpolation coefficients (3D for binary adjacency)
     alpha_adj = tf.random.uniform([batch_size, 1, 1], 0.0, 1.0)
     alpha_nodes = tf.random.uniform([batch_size, 1, 1], 0.0, 1.0)
 
-    # Interpolated samples
     interpolated_adj = alpha_adj * real_adj + (1 - alpha_adj) * fake_adj
     interpolated_nodes = alpha_nodes * \
         real_nodes + (1 - alpha_nodes) * fake_nodes
@@ -98,7 +92,6 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
         interpolated_features = alpha_features * \
             real_features + (1 - alpha_features) * fake_features
 
-    # Compute gradients
     with tf.GradientTape() as tape:
         tape.watch([interpolated_adj, interpolated_nodes])
         if interpolated_features is not None:
@@ -114,7 +107,6 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
     else:
         gradients = tape.gradient(scores, [interpolated_adj, interpolated_nodes])
 
-    # Compute gradient norm
     gradients_adj = tf.reshape(gradients[0], [batch_size, -1])
     gradients_nodes = tf.reshape(gradients[1], [batch_size, -1])
     
@@ -127,7 +119,6 @@ def gradient_penalty_graph(discriminator, real_adj, real_nodes, fake_adj, fake_n
     gradient_norm = tf.sqrt(tf.reduce_sum(
         tf.square(gradients_combined), axis=1) + 1e-12)
 
-    # Penalty term: (||gradient|| - 1)^2
     penalty = tf.reduce_mean(tf.square(gradient_norm - 1.0))
 
     return penalty
@@ -183,18 +174,15 @@ def attention_pool(node_features, num_hidden=128):
     Returns:
         Pooled features (batch, features)
     """
-    # Simple attention: MLP -> softmax weights
     batch_size = tf.shape(node_features)[0]
     num_nodes = tf.shape(node_features)[1]
     feature_dim = tf.shape(node_features)[2]
 
-    # Attention weights
     attention_logits = tf.keras.layers.Dense(
         1)(node_features)  # (batch, nodes, 1)
     attention_weights = tf.nn.softmax(
         attention_logits, axis=1)  # (batch, nodes, 1)
 
-    # Weighted sum
     pooled = tf.reduce_sum(
         node_features * attention_weights, axis=1)  # (batch, features)
 
@@ -214,7 +202,6 @@ def compute_graph_statistics(adj_matrices, node_matrices):
     Returns:
         Dictionary with statistics
     """
-    # Number of edges per graph
     if adj_matrices.ndim == 4:
         num_edges = tf.reduce_sum(adj_matrices, axis=[1, 2, 3])
         edge_type_counts = tf.reduce_sum(adj_matrices, axis=[0, 1, 2])
@@ -222,12 +209,9 @@ def compute_graph_statistics(adj_matrices, node_matrices):
         num_edges = tf.reduce_sum(adj_matrices, axis=[1, 2])
         edge_type_counts = None
     else:
-        # Fallback: flatten
         num_edges = tf.reduce_sum(adj_matrices, axis=list(range(1, tf.rank(adj_matrices))))
         edge_type_counts = None
 
-    # Number of nodes per graph (non-padding)
-    # Assuming first activity index (0) is <PAD>
     node_mask = 1.0 - node_matrices[:, :, 0]  # (batch, nodes)
     num_nodes = tf.reduce_sum(node_mask, axis=1)
 
@@ -251,7 +235,7 @@ def build_edge_index(adj_matrix):
         edge_index: Array of shape (num_edges, 2) with [source, target]
         edge_types: Array of shape (num_edges,) with edge type indices
     """
-    # Find non-zero entries. Support 2D binary adjacency or 3D multi-channel.
+
     shape = adj_matrix.shape
     edge_list = []
     edge_type_list = []
@@ -273,7 +257,6 @@ def build_edge_index(adj_matrix):
                         edge_list.append([i, j])
                         edge_type_list.append(k)
     else:
-        # Fallback: try to flatten last axis
         nodes = shape[0]
         for i in range(nodes):
             for j in range(nodes):
@@ -302,7 +285,6 @@ def visualize_graph(adj_matrix, node_matrix, idx_to_activity, edge_type_names):
     print('\nGraph Structure:')
     print('-' * 60)
 
-    # Print nodes
     print('Nodes:')
     for i in range(num_nodes):
         activity_idx = np.argmax(node_matrix[i])
@@ -310,7 +292,6 @@ def visualize_graph(adj_matrix, node_matrix, idx_to_activity, edge_type_names):
         if activity != '<PAD>':
             print(f'  Node {i}: {activity}')
 
-    # Print edges
     print('\nEdges:')
     edge_index, edge_types = build_edge_index(adj_matrix)
     for (src, tgt), edge_type in zip(edge_index, edge_types):

@@ -1,14 +1,3 @@
-"""
-Instance Graph (IG) Evaluation Metrics.
-
-Implements metrics from the paper for evaluating Instance Graphs:
-- Accuracy (Acc): Number of correctly reconstructed graphs
-- Matching Cost (MC): Graph edit distance between generated and true IGs
-- Average Generalization (AG): Number of occurrence sequences per IG
-
-Author: Generated for graph-generation-grnn evaluation
-"""
-
 import networkx as nx
 import numpy as np
 from typing import List, Tuple, Optional, Callable
@@ -18,10 +7,7 @@ import warnings
 
 def node_match(n1_attrs: dict, n2_attrs: dict) -> bool:
     """Check if two nodes have the same label."""
-    # Support multiple attribute names for compatibility:
-    # - 'label': standard IG format
-    # - 'activity': displayGraphs.py format
-    # - 'concept:name': XES/process mining format
+
     label1 = n1_attrs.get('label', n1_attrs.get('activity', n1_attrs.get('concept:name', None)))
     label2 = n2_attrs.get('label', n2_attrs.get('activity', n2_attrs.get('concept:name', None)))
     return label1 == label2
@@ -31,7 +17,7 @@ def edge_match(e1_attrs: dict, e2_attrs: dict) -> bool:
     """Check if two edges have the same label (if labels exist)."""
     label1 = e1_attrs.get('label', None)
     label2 = e2_attrs.get('label', None)
-    # If edges don't have labels, consider them matching
+
     if label1 is None and label2 is None:
         return True
     return label1 == label2
@@ -76,14 +62,11 @@ def compute_accuracy(true_graphs: List[nx.DiGraph],
     correct = 0
     
     if match_by_index:
-        # Compare graphs at same index
         n = min(len(true_graphs), len(pred_graphs))
         for i in range(n):
             if is_labeled_isomorphic(true_graphs[i], pred_graphs[i]):
                 correct += 1
     else:
-        # For each true graph, check if any predicted graph matches
-        # This is more expensive but allows for unordered comparison
         used_pred = set()
         for true_g in true_graphs:
             for j, pred_g in enumerate(pred_graphs):
@@ -120,7 +103,7 @@ def compute_matching_cost(true_graph: nx.DiGraph,
     Returns:
         Integer matching cost, or None if timeout exceeded
     """
-    # Define cost functions (all operations have cost 1)
+
     def node_subst_cost(n1, n2):
         """Cost to substitute n1 with n2 (0 if same label, 1 otherwise)."""
         return 0 if node_match(n1, n2) else 1
@@ -207,7 +190,7 @@ def compute_matching_cost_batch(true_graphs: List[nx.DiGraph],
         'total': sum(costs),
         'count': len(costs),
         'failed': failed,
-        'costs': costs  # Include individual costs for analysis
+        'costs': costs
     }
 
 
@@ -234,11 +217,9 @@ def convert_to_dag(graph: nx.Graph) -> nx.DiGraph:
     
     dag = nx.DiGraph()
     
-    # Copy nodes with their attributes
     for node in graph.nodes():
         dag.add_node(node, **graph.nodes[node])
     
-    # Add edges directed from lower to higher node ID
     for u, v in graph.edges():
         if u < v:
             dag.add_edge(u, v, **graph.edges[u, v])
@@ -265,7 +246,6 @@ def find_start_end_nodes(graph: nx.DiGraph) -> Tuple[Optional[int], Optional[int
         elif label == 'END' or str(label).upper() == 'END':
             end_node = node
     
-    # Fallback: use in/out degree
     if start_node is None:
         for node in graph.nodes():
             if graph.in_degree(node) == 0:
@@ -301,7 +281,6 @@ def count_topological_orderings(graph: nx.DiGraph,
         Number of valid topological orderings (capped at max_count)
     """
     if not nx.is_directed_acyclic_graph(graph):
-        # Return 0 silently - will be tracked as cyclic in batch computation
         return 0
     
     nodes = list(graph.nodes())
@@ -312,8 +291,6 @@ def count_topological_orderings(graph: nx.DiGraph,
     if n == 1:
         return 1
     
-    # Use dynamic programming with memoization
-    # State: set of remaining nodes to order
     
     def count_orderings(remaining: frozenset, last_placed: frozenset) -> int:
         """
@@ -323,16 +300,13 @@ def count_topological_orderings(graph: nx.DiGraph,
         if len(remaining) == 0:
             return 1
         
-        # Early termination if we've exceeded max count
         if count_orderings.total >= max_count:
             return 0
         
         total = 0
         for node in remaining:
-            # Check if all predecessors are placed
             preds = set(graph.predecessors(node))
             if preds.issubset(last_placed):
-                # This node can be placed next
                 new_remaining = remaining - {node}
                 new_placed = last_placed | {node}
                 total += count_orderings(new_remaining, new_placed)
@@ -346,19 +320,16 @@ def count_topological_orderings(graph: nx.DiGraph,
     
     count_orderings.total = 0
     
-    # Handle start/end constraints
     if start_node is None:
         start_node, end_node = find_start_end_nodes(graph)
     
     remaining = frozenset(nodes)
     placed = frozenset()
     
-    # If start node specified, it must be first
     if start_node is not None and start_node in remaining:
         remaining = remaining - {start_node}
         placed = frozenset({start_node})
     
-    # Count orderings (end node constraint is implicit - it has no successors)
     count = count_orderings(remaining, placed)
     
     return min(count, max_count)
@@ -409,7 +380,6 @@ def compute_avg_generalization(graphs: List[nx.DiGraph],
     num_converted = 0
     
     for g in graphs:
-        # Convert undirected graphs to directed using node ordering
         if not g.is_directed():
             g = convert_to_dag(g)
             num_converted += 1
@@ -420,10 +390,9 @@ def compute_avg_generalization(graphs: List[nx.DiGraph],
             ag = compute_generalization(g, max_count=max_count_per_graph)
         else:
             num_cyclic += 1
-            ag = 0  # Cyclic graphs have undefined AG
+            ag = 0
         counts.append(ag)
     
-    # Compute statistics only for valid DAGs
     dag_counts = [c for c in counts if c > 0]
     
     if not dag_counts:
@@ -436,17 +405,17 @@ def compute_avg_generalization(graphs: List[nx.DiGraph],
         dag_std = np.std(dag_counts)
     
     return {
-        'mean': np.mean(counts),  # Overall mean (includes 0 for cyclic)
+        'mean': np.mean(counts),
         'median': np.median(counts),
         'std': np.std(counts),
         'min': min(counts),
         'max': max(counts),
-        'dag_mean': dag_mean,  # Mean only for DAGs
+        'dag_mean': dag_mean,
         'dag_median': dag_median,
         'dag_std': dag_std,
         'num_dags': num_dags,
         'num_cyclic': num_cyclic,
-        'ag_1': sum(1 for c in counts if c == 1),  # Tailored graphs (AG=1)
+        'ag_1': sum(1 for c in counts if c == 1),
         'ag_capped': sum(1 for c in counts if c >= max_count_per_graph),
         'counts': counts
     }
@@ -478,7 +447,6 @@ def evaluate_instance_graphs(pred_graphs: List[nx.DiGraph],
         'num_predicted': len(pred_graphs)
     }
     
-    # Average Generalization (can always be computed)
     if compute_ag:
         print("Computing Average Generalization...")
         ag_results = compute_avg_generalization(pred_graphs, ag_max_count)
@@ -492,12 +460,9 @@ def evaluate_instance_graphs(pred_graphs: List[nx.DiGraph],
         else:
             print("  (All graphs contain cycles - AG undefined)")
     
-    # Accuracy and Matching Cost (require ground truth)
     if true_graphs is not None:
         results['num_true'] = len(true_graphs)
         
-        # Accuracy
-        print("\nComputing Accuracy...")
         acc_count, acc_pct = compute_accuracy(true_graphs, pred_graphs)
         results['accuracy'] = {
             'count': acc_count,
@@ -505,7 +470,6 @@ def evaluate_instance_graphs(pred_graphs: List[nx.DiGraph],
         }
         print(f"  Correct: {acc_count}/{len(true_graphs)} ({acc_pct:.1f}%)")
         
-        # Matching Cost
         print("\nComputing Matching Cost (this may take a while)...")
         mc_results = compute_matching_cost_batch(
             true_graphs, pred_graphs, 

@@ -1,12 +1,3 @@
-"""
-Graph Dataset - Convert instance graphs to adjacency matrices and node features
-
-Handles:
-- Binary adjacency matrix construction (no edge types)
-- Node feature matrices
-- Padding for variable-length graphs
-"""
-
 import numpy as np
 import tensorflow as tf
 from typing import List, Dict, Tuple
@@ -22,7 +13,6 @@ def log(msg: str):
 class GraphDataset:
     """
     Convert instance graphs to binary adjacency matrices for GAN training
-    (No edge type classification - binary edges only)
     """
 
     def __init__(self,
@@ -50,14 +40,8 @@ class GraphDataset:
         self.verbose = verbose
         self.num_activities = len(activity_to_idx)
         
-        # Filter traces by size if specified
         self.traces = self._filter_traces_by_size(traces, min_graph_size, max_graph_size)
 
-        # No edge type classification (binary adjacency)
-        # self.edge_classifier = EdgeTypeClassifier()  # REMOVED
-        # self.num_edge_types = self.edge_classifier.num_types  # REMOVED
-
-        # Preprocess all traces
         self.adjacency_matrices = []
         self.node_matrices = []
         self.feature_matrices = [] if include_features else None
@@ -83,11 +67,9 @@ class GraphDataset:
         for trace in traces:
             num_vertices = len(trace['vertices'])
             
-            # Check minimum size
             if min_size is not None and num_vertices < min_size:
                 continue
             
-            # Check maximum size
             if max_size is not None and num_vertices > max_size:
                 continue
             
@@ -109,20 +91,15 @@ class GraphDataset:
             log(f'Converting {len(self.traces)} traces to matrices...')
 
         for i, trace in enumerate(self.traces):
-            # Build node ID to index mapping
             vertices = trace['vertices']
             node_id_to_idx = {v['node_id']
                 : idx for idx, v in enumerate(vertices)}
-
-            # Build adjacency matrix
             adj_matrix = self._build_adjacency(trace, node_id_to_idx)
             self.adjacency_matrices.append(adj_matrix)
 
-            # Build node matrix (one-hot activities)
             node_matrix = self._build_nodes(trace)
             self.node_matrices.append(node_matrix)
 
-            # Build feature matrix (optional)
             if self.include_features:
                 feature_matrix = self._build_features(trace)
                 self.feature_matrices.append(feature_matrix)
@@ -130,7 +107,6 @@ class GraphDataset:
             if self.verbose and (i + 1) % 1000 == 0:
                 log(f'  Processed {i + 1}/{len(self.traces)} traces')
 
-        # Convert to numpy arrays
         self.adjacency_matrices = np.array(
             self.adjacency_matrices, dtype=np.float32)
         self.node_matrices = np.array(self.node_matrices, dtype=np.float32)
@@ -153,21 +129,18 @@ class GraphDataset:
         """
         adj = np.zeros((self.max_nodes, self.max_nodes), dtype=np.float32)
 
-        # Fill adjacency matrix with binary edges
         edges = trace['edges']
 
         for edge in edges:
             src_id = edge['source']
             tgt_id = edge['target']
 
-            # Map to indices
             if src_id not in node_id_to_idx or tgt_id not in node_id_to_idx:
                 continue
 
             src_idx = node_id_to_idx[src_id]
             tgt_idx = node_id_to_idx[tgt_id]
 
-            # Set binary adjacency (no edge type)
             if src_idx < self.max_nodes and tgt_idx < self.max_nodes:
                 adj[src_idx, tgt_idx] = 1.0
 
@@ -180,12 +153,10 @@ class GraphDataset:
         Returns:
             Node matrix of shape (max_nodes, num_activities)
         """
-        # Initialize with PAD token (index 0)
-        # This ensures padding nodes are explicitly represented as PAD
-        # instead of all-zeros, matching the generator's softmax output capability
+
         nodes = np.zeros(
             (self.max_nodes, self.num_activities), dtype=np.float32)
-        nodes[:, 0] = 1.0  # Set all to PAD initially
+        nodes[:, 0] = 1.0 
 
         vertices = trace['vertices']
         for idx, vertex in enumerate(vertices):
@@ -195,7 +166,6 @@ class GraphDataset:
             activity = vertex['activity']
             activity_idx = self.activity_to_idx.get(activity, 0)  # 0 = <PAD>
             
-            # Clear PAD and set actual activity
             nodes[idx, 0] = 0.0
             nodes[idx, activity_idx] = 1.0
 
@@ -258,10 +228,8 @@ class GraphDataset:
         Returns:
             Array of shape (num_activities,) with frequencies
         """
-        # Sum across all nodes and traces
-        activity_counts = np.sum(self.node_matrices, axis=(0, 1))
 
-        # Normalize
+        activity_counts = np.sum(self.node_matrices, axis=(0, 1))
         activity_frequencies = activity_counts / np.sum(activity_counts)
 
         return activity_frequencies.astype(np.float32)
@@ -307,29 +275,18 @@ class GraphDataset:
 
     def get_statistics(self) -> Dict:
         """Get dataset statistics"""
-        # Count edge types
-        # No edge type classification (binary only)
-        # edge_type_counts = {}
-        # for edge_type, idx in self.edge_classifier.edge_types.items():
-        #     count = np.sum(self.adjacency_matrices[:, :, :, idx])
-        #     edge_type_counts[edge_type] = int(count)
 
-        # Activity frequencies
         activity_freqs = self.compute_activity_frequencies()
 
-        # Total edge count (binary)
         total_edges = int(np.sum(self.adjacency_matrices))
         
-        # Graph size distribution
         graph_sizes = self.get_graph_size_distribution()
 
         stats = {
             'num_traces': len(self.traces),
             'num_activities': self.num_activities,
-            # 'num_edge_types': self.num_edge_types,  # Not applicable
             'max_nodes': self.max_nodes,
             'total_edges': total_edges,
-            # 'edge_type_counts': edge_type_counts,  # Not applicable
             'activity_frequencies': activity_freqs,
             'adjacency_shape': self.adjacency_matrices.shape,
             'nodes_shape': self.node_matrices.shape,
@@ -372,10 +329,6 @@ class GraphDataset:
         print(f"Number of activities: {stats['num_activities']}")
         print(f"Max nodes per graph: {stats['max_nodes']}")
         print(f"Total edges (binary): {stats['total_edges']}")
-
-        # print('\nEdge type distribution:')  # Not applicable
-        # for edge_type, count in stats['edge_type_counts'].items():
-        #     print(f"  {edge_type}: {count}")
         
         print('\nGraph size distribution:')
         size_stats = stats['graph_sizes']

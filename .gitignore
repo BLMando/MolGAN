@@ -110,4 +110,3 @@ data/*.pkl.gz
 output_graph_gan/
 docs/
 MOLGAN/
-*.md
